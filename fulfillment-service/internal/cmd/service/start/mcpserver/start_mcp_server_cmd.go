@@ -76,10 +76,12 @@ type runnerContext struct {
 	}
 }
 
-// serverDeps contains the downstream clients used by the MCP tool handlers.
-type serverDeps struct {
-	catalogItemsClient publicv1.ClusterCatalogItemsClient
-	clustersClient     publicv1.ClustersClient
+// ServerDeps contains the downstream clients used by the MCP tool handlers. Exported so that it/'s integration test
+// can build a handler pointed at a live fulfillment-service instance without duplicating newServer's tool
+// registration.
+type ServerDeps struct {
+	CatalogItemsClient publicv1.ClusterCatalogItemsClient
+	ClustersClient     publicv1.ClustersClient
 }
 
 // tokenExpirationLeeway is shared between the JWT validator and the bearer-token middleware's clock-skew
@@ -169,22 +171,10 @@ func (c *runnerContext) run(cmd *cobra.Command, argv []string) error {
 	}
 
 	// Build the MCP server and wrap it with bearer-token authentication:
-	server := newServer(serverDeps{
-		catalogItemsClient: publicv1.NewClusterCatalogItemsClient(grpcClient),
-		clustersClient:     publicv1.NewClustersClient(grpcClient),
-	})
-	streamableHandler := mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return server },
-		&mcp.StreamableHTTPOptions{
-			Stateless: true,
-		},
-	)
-	var handler http.Handler = streamableHandler
-	handler = sdkauth.RequireBearerToken(newTokenVerifier(jwtValidator), &sdkauth.RequireBearerTokenOptions{
-		// Matches the JWT validator's own expiration leeway above, so the SDK's independent expiration
-		// check doesn't reject tokens the validator itself still considers valid.
-		ClockSkew: tokenExpirationLeeway,
-	})(handler)
+	handler := NewHandler(ServerDeps{
+		CatalogItemsClient: publicv1.NewClusterCatalogItemsClient(grpcClient),
+		ClustersClient:     publicv1.NewClustersClient(grpcClient),
+	}, jwtValidator)
 
 	// Add the CORS support:
 	corsMiddleware, err := network.NewCorsMiddleware().
@@ -230,7 +220,7 @@ func (c *runnerContext) run(cmd *cobra.Command, argv []string) error {
 }
 
 // newServer creates the MCP server and registers its tools.
-func newServer(deps serverDeps) *mcp.Server {
+func newServer(deps ServerDeps) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "osac-deployment-mcp",
 		Version: version.Get(),
@@ -238,20 +228,39 @@ func newServer(deps serverDeps) *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_catalog_items",
 		Description: "Lists the published cluster catalog items that clusters can be created from.",
-	}, handleListCatalogItems(deps.catalogItemsClient))
+	}, handleListCatalogItems(deps.CatalogItemsClient))
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "describe_catalog_item",
 		Description: "Describes a cluster catalog item, including the fields callers may set when creating a cluster from it.",
-	}, handleDescribeCatalogItem(deps.catalogItemsClient))
+	}, handleDescribeCatalogItem(deps.CatalogItemsClient))
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "create_cluster_from_catalog_item",
 		Description: "Creates a new cluster from a cluster catalog item.",
-	}, handleCreateClusterFromCatalogItem(deps.clustersClient))
+	}, handleCreateClusterFromCatalogItem(deps.ClustersClient))
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_cluster_status",
 		Description: "Gets the current status of a cluster.",
-	}, handleGetClusterStatus(deps.clustersClient))
+	}, handleGetClusterStatus(deps.ClustersClient))
 	return server
+}
+
+// NewHandler builds the composed HTTP handler for the MCP server: tool registration (newServer), the Streamable
+// HTTP transport, and bearer-token verification — the same composition run's RunE serves. Exported so it/'s
+// integration test can stand up a real instance against a live fulfillment-service without re-deriving this wiring
+// (and risking it drifting from the real command).
+func NewHandler(deps ServerDeps, validator auth.JwtValidator) http.Handler {
+	server := newServer(deps)
+	streamableHandler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return server },
+		&mcp.StreamableHTTPOptions{
+			Stateless: true,
+		},
+	)
+	return sdkauth.RequireBearerToken(newTokenVerifier(validator), &sdkauth.RequireBearerTokenOptions{
+		// Matches the JWT validator's own expiration leeway, so the SDK's independent expiration check
+		// doesn't reject tokens the validator itself still considers valid.
+		ClockSkew: tokenExpirationLeeway,
+	})(streamableHandler)
 }
 
 // rawTokenExtraKey is the key used to stash the raw bearer token string inside sdkauth.TokenInfo.Extra, since
