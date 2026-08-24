@@ -243,6 +243,14 @@ func newServer(deps serverDeps) *mcp.Server {
 		Name:        "describe_catalog_item",
 		Description: "Describes a cluster catalog item, including the fields callers may set when creating a cluster from it.",
 	}, handleDescribeCatalogItem(deps.catalogItemsClient))
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "create_cluster_from_catalog_item",
+		Description: "Creates a new cluster from a cluster catalog item.",
+	}, handleCreateClusterFromCatalogItem(deps.clustersClient))
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "get_cluster_status",
+		Description: "Gets the current status of a cluster.",
+	}, handleGetClusterStatus(deps.clustersClient))
 	return server
 }
 
