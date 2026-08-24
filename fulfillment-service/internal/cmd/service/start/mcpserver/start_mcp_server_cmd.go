@@ -230,11 +230,20 @@ func (c *runnerContext) run(cmd *cobra.Command, argv []string) error {
 }
 
 // newServer creates the MCP server and registers its tools.
-func newServer(_ serverDeps) *mcp.Server {
-	return mcp.NewServer(&mcp.Implementation{
+func newServer(deps serverDeps) *mcp.Server {
+	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "osac-deployment-mcp",
 		Version: version.Get(),
 	}, nil)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "list_catalog_items",
+		Description: "Lists the published cluster catalog items that clusters can be created from.",
+	}, handleListCatalogItems(deps.catalogItemsClient))
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "describe_catalog_item",
+		Description: "Describes a cluster catalog item, including the fields callers may set when creating a cluster from it.",
+	}, handleDescribeCatalogItem(deps.catalogItemsClient))
+	return server
 }
 
 // rawTokenExtraKey is the key used to stash the raw bearer token string inside sdkauth.TokenInfo.Extra, since
