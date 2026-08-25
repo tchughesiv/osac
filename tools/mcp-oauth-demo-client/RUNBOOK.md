@@ -2,7 +2,7 @@
 
 How to actually run the OSAC Deployment MCP PoC end to end: a real browser OAuth login against a
 real Keycloak, driving the four demo MCP tools against a real `fulfillment-service`, with real
-per-user attribution. Two paths, depending on what you already have.
+per-user attribution. Three paths, depending on what you already have.
 
 All paths below are relative to the root of this `osac` clone — cd back to that root between steps
 (none of the commands chain a `cd` from one step into the next).
@@ -11,16 +11,28 @@ All paths below are relative to the root of this `osac` clone — cd back to tha
 a live cluster in this session** — this sandbox's local podman/kind networking (`gvproxy`) is broken
 (see the chat for the diagnosis), so none of this was run live here. The `mcp-server` flags, hosts
 file entries, and CA-bundle extraction are all confirmed by cross-referencing existing code
-(`it_tool.go`, `integration-tests.yml`, the Helm values files) rather than guessed. The one place with
-real residual risk is the catalog-item-seeding `grpcurl` payloads in Option A step 5 — the field names
-are read straight off the `.proto` files, but no live server has validated them. Ping back with the
-actual error if one of those doesn't match.
+(`it_tool.go`, `integration-tests.yml`, the Helm values files) rather than guessed. Known residual
+risk, by option:
+
+- **Option A, step 4**: the catalog-item-seeding `grpcurl` payloads — field names read straight off
+  the `.proto` files, but no live server has validated them.
+- **Option C, step 1**: `PLATFORM=openshift PROFILE=vmaas-ci` against a real OpenShift cluster is
+  confirmed by reading `osac-installer`'s Makefile and `values/vmaas-ci/*.yaml`, and by the fact that
+  `cluster-tool`'s own `refresh-after-snapshot.py` uses this exact profile — but it's never been run
+  against a cluster that wasn't already provisioned by `cluster-tool` itself.
+- **Option C, step 3**: `publishTemplates.enabled: true` being the chart default (vs. kind's explicit
+  `false`) is confirmed by reading `charts/osac/values.yaml`, but the actual AAP job-template-sync
+  timing/behavior on a fresh real cluster is unobserved.
+- **Option C, step 4**: the `:443` port on `--grpc-server-address` is inferred from how OpenShift
+  Routes terminate TLS by default, not confirmed against a live Route.
+
+Ping back with the actual error if any of these don't match what you see.
 
 ## Option A: Fresh kind cluster (self-contained)
 
 No AAP license or pull secret needed — `PLATFORM=kind` disables AAP entirely, so this is the fastest
-self-serve path, at the cost of one extra manual step (5) that a real AAP-backed cluster (Option B)
-doesn't need.
+self-serve path, at the cost of one extra manual step (4) that a real AAP-backed cluster (Option B
+or C) doesn't need.
 
 ### 1. Boot infra + OSAC
 
@@ -185,9 +197,92 @@ cluster's Route hostnames instead of the `*.svc.cluster.local` kind names, and w
 `-ca-file` at all if that cluster's ingress cert is issued by a CA your host already trusts (e.g. a
 real Let's Encrypt cert, unlike kind's self-signed one).
 
+## Option C: Existing OpenShift cluster (`PLATFORM=openshift`, no cluster-tool)
+
+If you already have `oc` cluster-admin access to a real OpenShift 4.x cluster — not a fresh kind
+cluster, not booted via cluster-tool — `osac-installer` supports installing OSAC directly onto it.
+
+### 1. Install infra + OSAC
+
+`PROFILE=vmaas-ci` bundles everything (Postgres, cert-manager, Keycloak, AAP via OLM) the same way
+kind/cluster-tool do, despite the CI-sounding name — it's the exact profile `cluster-tool`'s own
+`refresh-after-snapshot.py` uses to install OSAC onto its real OpenShift VMs, so it's expected to
+behave identically against any other real OpenShift cluster. The one thing kind doesn't need that
+this does: a real AAP `license.zip`.
+
+```bash
+cd osac-installer
+oc login ...   # however you normally authenticate to this cluster
+make install-infra PLATFORM=openshift PROFILE=vmaas-ci NS=osac
+make install-osac PLATFORM=openshift PROFILE=vmaas-ci NS=osac AAP_LICENSE_FILE=/path/to/license.zip
+```
+
+`install-osac` derives the Route hostnames itself from `oc get ingresses.config/cluster` — no
+manual `/etc/hosts` step needed, unlike kind.
+
+### 2. Trust the cluster's CA
+
+Same mechanism as Option A step 2 — `trust-manager` aggregates the CA into the same `ca-bundle`
+ConfigMap regardless of platform:
+
+```bash
+mkdir -p /tmp/osac-ca
+kubectl get configmap ca-bundle -n osac -o json \
+  | python3 -c "import json,sys; [print(v) for v in json.load(sys.stdin)['data'].values()]" \
+  > /tmp/osac-ca/ca-bundle.pem
+```
+
+### 3. Catalog items publish automatically — no manual seeding needed
+
+Unlike kind, `publishTemplates.enabled: true` is the chart default (kind is the one platform that
+turns it off) — real AAP syncs the `osac.templates` collection into published `ClusterCatalogItem`s
+on its own. Give it a few minutes after `install-osac` finishes; confirm via the demo client's own
+`list_catalog_items` tool in step 5 rather than a separate CLI check.
+
+### 4. Build and run `mcp-server` locally
+
+Same as Option A step 5, but pointed at the cluster's real Route hostnames instead of kind's
+`*.svc.cluster.local` names:
+
+```bash
+cd fulfillment-service
+go build -o /tmp/fulfillment-service ./cmd/fulfillment-service
+DOMAIN=$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')
+
+/tmp/fulfillment-service start mcp-server \
+  --grpc-server-address "fulfillment-internal-api-osac.${DOMAIN}:443" \
+  --ca-file /tmp/osac-ca/ca-bundle.pem \
+  --http-listener-address localhost:8001 \
+  --grpc-authn-trusted-token-issuers "https://keycloak-keycloak.${DOMAIN}/realms/osac" \
+  --oauth-authorization-server "https://keycloak-keycloak.${DOMAIN}/realms/osac" \
+  --oauth-resource-url http://localhost:8001
+```
+
+The `:443` on `--grpc-server-address` is inferred from how OpenShift Routes terminate TLS by
+default, matching Option B's own Route-based wiring — not independently confirmed against a live
+Route in this session.
+
+### 5. Build and run the reference OAuth demo client
+
+Same as Option A step 6, pointed at the same real issuer:
+
+```bash
+cd tools/mcp-oauth-demo-client
+GOWORK=off go run . \
+  -server-url http://localhost:8001 \
+  -issuer "https://keycloak-keycloak.${DOMAIN}/realms/osac" \
+  -ca-file /tmp/osac-ca/ca-bundle.pem
+```
+
+Log in as `user`/`foobar` (the same `devFixtures` fixture `vmaas-ci` shares with kind). Since AAP is
+real here, the created cluster has an actual chance of reaching `READY` — a good opportunity to
+also exercise `get_cluster_status`'s poll-until-ready path, not just kind's immediate-`PROGRESSING`
+response.
+
 ## Cleanup
 
 - kind: `make -C osac-installer uninstall PLATFORM=kind PROFILE=dev NS=osac` (also deletes the
   kind cluster itself, per the Makefile's `uninstall-infra` kind branch).
+- Option C (`PLATFORM=openshift`): `make -C osac-installer uninstall PLATFORM=openshift PROFILE=vmaas-ci NS=osac` (`AAP_LICENSE_FILE` isn't checked by the uninstall targets, only `install-osac`).
 - The demo cluster the demo client creates is **not** deleted automatically — clean it up via the
   `osac` CLI or console.
