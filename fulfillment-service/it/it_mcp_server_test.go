@@ -154,11 +154,14 @@ var _ = Describe("MCP server", func() {
 
 		// Stand up mcpserver's real HTTP handler — tool registration, Streamable HTTP transport, and bearer-token
 		// verification — reusing mcpserver.NewHandler so this test exercises the exact composition the real
-		// command serves, not a hand-rolled reconstruction of it.
-		handler := mcpserver.NewHandler(mcpserver.ServerDeps{
+		// command serves, not a hand-rolled reconstruction of it. OAuth discovery is left unconfigured (empty
+		// strings): this test proves token-passthrough attribution using a token injected directly by the test's
+		// own HTTP client, not the interactive browser login discovery enables.
+		handler, err := mcpserver.NewHandler(mcpserver.ServerDeps{
 			CatalogItemsClient: publicv1.NewClusterCatalogItemsClient(mcpGrpcConn),
 			ClustersClient:     publicv1.NewClustersClient(mcpGrpcConn),
-		}, jwtValidator)
+		}, jwtValidator, "", "")
+		Expect(err).ToNot(HaveOccurred())
 		mcpHTTPServer = httptest.NewServer(handler)
 		DeferCleanup(func() {
 			mcpHTTPServer.Close()

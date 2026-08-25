@@ -19,11 +19,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"syscall"
 	"time"
 
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"google.golang.org/grpc/metadata"
@@ -63,6 +65,18 @@ func Cmd() *cobra.Command {
 		[]string{},
 		caFileFlagHelp,
 	)
+	flags.StringVar(
+		&runner.args.oauthAuthorizationServer,
+		"oauth-authorization-server",
+		"",
+		oauthAuthorizationServerFlagHelp,
+	)
+	flags.StringVar(
+		&runner.args.oauthResourceURL,
+		"oauth-resource-url",
+		"",
+		oauthResourceURLFlagHelp,
+	)
 	return command
 }
 
@@ -71,8 +85,10 @@ type runnerContext struct {
 	logger *slog.Logger
 	flags  *pflag.FlagSet
 	args   struct {
-		trustedTokenIssuers []string
-		caFiles             []string
+		trustedTokenIssuers      []string
+		caFiles                  []string
+		oauthAuthorizationServer string
+		oauthResourceURL         string
 	}
 }
 
@@ -171,10 +187,13 @@ func (c *runnerContext) run(cmd *cobra.Command, argv []string) error {
 	}
 
 	// Build the MCP server and wrap it with bearer-token authentication:
-	handler := NewHandler(ServerDeps{
+	handler, err := NewHandler(ServerDeps{
 		CatalogItemsClient: publicv1.NewClusterCatalogItemsClient(grpcClient),
 		ClustersClient:     publicv1.NewClustersClient(grpcClient),
-	}, jwtValidator)
+	}, jwtValidator, c.args.oauthAuthorizationServer, c.args.oauthResourceURL)
+	if err != nil {
+		return fmt.Errorf("failed to create MCP handler: %w", err)
+	}
 
 	// Add the CORS support:
 	corsMiddleware, err := network.NewCorsMiddleware().
@@ -244,11 +263,41 @@ func newServer(deps ServerDeps) *mcp.Server {
 	return server
 }
 
+// oauthProtectedResourcePath is where the RFC 9728 protected-resource-metadata document is served, when OAuth
+// discovery is configured. A spec-compliant MCP client that receives a 401 with this path in the WWW-Authenticate
+// header's resource_metadata hint fetches it to learn which Authorization Server protects this resource, then
+// drives a real interactive browser login on its own — no manual bearer-token configuration needed.
+const oauthProtectedResourcePath = "/.well-known/oauth-protected-resource"
+
 // NewHandler builds the composed HTTP handler for the MCP server: tool registration (newServer), the Streamable
-// HTTP transport, and bearer-token verification — the same composition run's RunE serves. Exported so it/'s
-// integration test can stand up a real instance against a live fulfillment-service without re-deriving this wiring
-// (and risking it drifting from the real command).
-func NewHandler(deps ServerDeps, validator auth.JwtValidator) http.Handler {
+// HTTP transport, bearer-token verification, and — when oauthAuthorizationServer/oauthResourceURL are both
+// non-empty — RFC 9728 protected-resource-metadata discovery. Exported so callers can stand up the exact
+// composition the command serves, without re-deriving the wiring.
+//
+// oauthAuthorizationServer is the Keycloak realm issuer to advertise as the protecting Authorization Server.
+// oauthResourceURL is this MCP server's own canonical externally-reachable URL (the "resource" in RFC 9728/8707
+// terms) — it can't be inferred from the listener's bind address alone, since a real deployment sits behind an
+// ingress/gateway on a different host and port. The two must be set together, or not at all; NewHandler returns
+// an error otherwise, since discovery can't be partially configured.
+//
+// When both are set, every request — not just ones to the metadata path — is routed through an http.ServeMux
+// first. Per net/http's own documented behavior, ServeMux redirects requests with a non-canonical path (repeated
+// slashes, "." or ".." segments) before they reach the streamable handler; a client behind a proxy that produces
+// such a path against the MCP endpoint would previously have been served directly and will now see a redirect
+// instead. Accepted as a narrow trade-off of enabling discovery, not a regression in bearer-token verification
+// itself, which is otherwise identical either way.
+func NewHandler(
+	deps ServerDeps, validator auth.JwtValidator, oauthAuthorizationServer, oauthResourceURL string,
+) (http.Handler, error) {
+	if (oauthAuthorizationServer == "") != (oauthResourceURL == "") {
+		return nil, errors.New(
+			"'--oauth-authorization-server' and '--oauth-resource-url' must be set together, or not at all",
+		)
+	}
+	// A trailing slash would otherwise double up against oauthProtectedResourcePath's own leading slash, and
+	// would make the advertised "resource" identifier inconsistent with whatever exact string operators expect
+	// Keycloak's issued-token audience/resource-indicator checks to match.
+	oauthResourceURL = strings.TrimSuffix(oauthResourceURL, "/")
 	server := newServer(deps)
 	streamableHandler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return server },
@@ -256,11 +305,28 @@ func NewHandler(deps ServerDeps, validator auth.JwtValidator) http.Handler {
 			Stateless: true,
 		},
 	)
-	return sdkauth.RequireBearerToken(newTokenVerifier(validator), &sdkauth.RequireBearerTokenOptions{
+	var resourceMetadataURL string
+	if oauthResourceURL != "" {
+		resourceMetadataURL = oauthResourceURL + oauthProtectedResourcePath
+	}
+	authenticatedHandler := sdkauth.RequireBearerToken(newTokenVerifier(validator), &sdkauth.RequireBearerTokenOptions{
 		// Matches the JWT validator's own expiration leeway, so the SDK's independent expiration check
 		// doesn't reject tokens the validator itself still considers valid.
-		ClockSkew: tokenExpirationLeeway,
+		ClockSkew:           tokenExpirationLeeway,
+		ResourceMetadataURL: resourceMetadataURL,
 	})(streamableHandler)
+	if oauthAuthorizationServer == "" {
+		return authenticatedHandler, nil
+	}
+	// The metadata document itself must never require the very bearer token clients are trying to discover how to
+	// obtain, so it's mounted unauthenticated, on a mux alongside (not wrapped by) the authenticated MCP endpoint.
+	mux := http.NewServeMux()
+	mux.Handle(oauthProtectedResourcePath, sdkauth.ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             oauthResourceURL,
+		AuthorizationServers: []string{oauthAuthorizationServer},
+	}))
+	mux.Handle("/", authenticatedHandler)
+	return mux, nil
 }
 
 // rawTokenExtraKey is the key used to stash the raw bearer token string inside sdkauth.TokenInfo.Extra, since
@@ -324,4 +390,16 @@ _ISSUERS_ - Comma separated list of token issuers that are trusted to authentica
 
 const caFileFlagHelp = `
 _FILE|DIRECTORY_ - File or directory containing trusted CA certificates.
+`
+
+const oauthAuthorizationServerFlagHelp = `
+_URL_ - Issuer URL of the OAuth authorization server (Keycloak realm) that protects this MCP server, advertised via
+RFC 9728 protected-resource-metadata discovery so spec-compliant MCP clients (e.g. Cursor, Claude Desktop) can drive
+a real interactive login instead of requiring a manually configured bearer token. Must be set together with
+{{ bt }}--oauth-resource-url{{ bt }}, or not at all.
+`
+
+const oauthResourceURLFlagHelp = `
+_URL_ - This MCP server's own canonical externally-reachable URL, advertised as the "resource" in the protected-
+resource-metadata document. Must be set together with {{ bt }}--oauth-authorization-server{{ bt }}, or not at all.
 `

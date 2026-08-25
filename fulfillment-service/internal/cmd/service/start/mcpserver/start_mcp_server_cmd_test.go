@@ -15,7 +15,10 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"time"
 
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
@@ -58,6 +61,16 @@ var _ = Describe("Cmd", func() {
 	It("Has a --ca-file flag", func() {
 		cmd := Cmd()
 		Expect(cmd.Flags().Lookup("ca-file")).ToNot(BeNil())
+	})
+
+	It("Has an --oauth-authorization-server flag", func() {
+		cmd := Cmd()
+		Expect(cmd.Flags().Lookup("oauth-authorization-server")).ToNot(BeNil())
+	})
+
+	It("Has an --oauth-resource-url flag", func() {
+		cmd := Cmd()
+		Expect(cmd.Flags().Lookup("oauth-resource-url")).ToNot(BeNil())
 	})
 
 	It("Accepts no arguments", func() {
@@ -169,5 +182,113 @@ var _ = Describe("forwardToken", func() {
 		}
 		result := forwardToken(ctx, req)
 		Expect(result).To(Equal(ctx))
+	})
+})
+
+var _ = Describe("NewHandler", func() {
+	var ctrl *gomock.Controller
+
+	BeforeEach(func() {
+		ctrl = gomock.NewController(GinkgoT())
+		DeferCleanup(ctrl.Finish)
+	})
+
+	It("Rejects an unauthenticated request with no resource_metadata hint when OAuth discovery is unconfigured", func() {
+		validator := auth.NewMockJwtValidator(ctrl)
+		handler, err := NewHandler(ServerDeps{}, validator, "", "")
+		Expect(err).ToNot(HaveOccurred())
+
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/", nil)
+		handler.ServeHTTP(recorder, request)
+
+		Expect(recorder.Code).To(Equal(http.StatusUnauthorized))
+		Expect(recorder.Header().Get("WWW-Authenticate")).ToNot(ContainSubstring("resource_metadata"))
+	})
+
+	It("Rejects configuration with only one of the two OAuth discovery flags set", func() {
+		validator := auth.NewMockJwtValidator(ctrl)
+		_, err := NewHandler(ServerDeps{}, validator, "https://keycloak.example.com/realms/osac", "")
+		Expect(err).To(HaveOccurred())
+
+		_, err = NewHandler(ServerDeps{}, validator, "", "https://mcp.example.com")
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("Adds a resource_metadata hint to 401s and serves the metadata document, unauthenticated, when both flags are set", func() {
+		validator := auth.NewMockJwtValidator(ctrl)
+		handler, err := NewHandler(
+			ServerDeps{}, validator, "https://keycloak.example.com/realms/osac", "https://mcp.example.com",
+		)
+		Expect(err).ToNot(HaveOccurred())
+
+		// The main endpoint's 401 now carries a discovery hint:
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/", nil)
+		handler.ServeHTTP(recorder, request)
+		Expect(recorder.Code).To(Equal(http.StatusUnauthorized))
+		Expect(recorder.Header().Get("WWW-Authenticate")).To(ContainSubstring(
+			`resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"`,
+		))
+
+		// The metadata document itself is served without requiring a bearer token:
+		recorder = httptest.NewRecorder()
+		request = httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+		handler.ServeHTTP(recorder, request)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+		var metadata struct {
+			Resource             string   `json:"resource"`
+			AuthorizationServers []string `json:"authorization_servers"`
+		}
+		Expect(json.Unmarshal(recorder.Body.Bytes(), &metadata)).ToNot(HaveOccurred())
+		Expect(metadata.Resource).To(Equal("https://mcp.example.com"))
+		Expect(metadata.AuthorizationServers).To(Equal([]string{"https://keycloak.example.com/realms/osac"}))
+	})
+
+	It("Trims a trailing slash from the resource URL before using it in the hint and metadata document", func() {
+		validator := auth.NewMockJwtValidator(ctrl)
+		handler, err := NewHandler(
+			ServerDeps{}, validator, "https://keycloak.example.com/realms/osac", "https://mcp.example.com/",
+		)
+		Expect(err).ToNot(HaveOccurred())
+
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/", nil)
+		handler.ServeHTTP(recorder, request)
+		Expect(recorder.Header().Get("WWW-Authenticate")).To(ContainSubstring(
+			`resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"`,
+		))
+
+		recorder = httptest.NewRecorder()
+		request = httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+		handler.ServeHTTP(recorder, request)
+		var metadata struct {
+			Resource string `json:"resource"`
+		}
+		Expect(json.Unmarshal(recorder.Body.Bytes(), &metadata)).ToNot(HaveOccurred())
+		Expect(metadata.Resource).To(Equal("https://mcp.example.com"))
+	})
+
+	It("Still routes an authenticated request through to the streamable transport when both flags are set", func() {
+		expiration := time.Now().Add(time.Hour)
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+			"sub": "alice",
+			"exp": float64(expiration.Unix()),
+		})
+		validator := auth.NewMockJwtValidator(ctrl)
+		validator.EXPECT().Validate(gomock.Any(), "valid-token").Return(token, nil)
+		handler, err := NewHandler(
+			ServerDeps{}, validator, "https://keycloak.example.com/realms/osac", "https://mcp.example.com",
+		)
+		Expect(err).ToNot(HaveOccurred())
+
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/", nil)
+		request.Header.Set("Authorization", "Bearer valid-token")
+		handler.ServeHTTP(recorder, request)
+
+		// A valid token clears bearer-token verification, so the request reaches the streamable handler and fails
+		// for a reason specific to that layer (an empty/non-JSON-RPC body), not for lack of authentication.
+		Expect(recorder.Code).ToNot(Equal(http.StatusUnauthorized))
 	})
 })
