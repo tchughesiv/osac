@@ -16,14 +16,20 @@ risk, by option:
 
 - **Option A, step 4**: the catalog-item-seeding `grpcurl` payloads — field names read straight off
   the `.proto` files, but no live server has validated them.
-- **Option C, step 1**: `PLATFORM=openshift PROFILE=vmaas-ci` against a real OpenShift cluster is
-  confirmed by reading `osac-installer`'s Makefile and `values/vmaas-ci/*.yaml`, and by the fact that
-  `cluster-tool`'s own `refresh-after-snapshot.py` uses this exact profile — but it's never been run
-  against a cluster that wasn't already provisioned by `cluster-tool` itself.
-- **Option C, step 3**: `publishTemplates.enabled: true` being the chart default (vs. kind's explicit
-  `false`) is confirmed by reading `charts/osac/values.yaml`, but the actual AAP job-template-sync
-  timing/behavior on a fresh real cluster is unobserved.
-- **Option C, step 4**: the `:443` port on `--grpc-server-address` is inferred from how OpenShift
+- **Option C, step 2 (install-infra)**: this *was* attempted live, against a cluster that turned out
+  to have pre-existing `cert-manager`/`openshift-storage`/`keycloak` infra from an earlier manual
+  install. Working around Helm's "exists and cannot be imported" errors by labeling/annotating those
+  pre-existing objects with Helm ownership metadata — the obvious-looking fix — is a real footgun: it
+  let a later `helm upgrade --install osac-infra` overwrite a pre-existing RHBK `Keycloak` custom
+  resource that was *also* backing that cluster's own OpenShift console SSO, breaking it, with no
+  Helm revision to roll back to (it was that release's first successful install). **Do not do this**
+  — see the preflight check in step 1 below. On a genuinely clean cluster (no prior manual
+  cert-manager/Keycloak install), `install-infra` itself is expected to work cleanly; that part
+  remains unexercised live.
+- **Option C, step 4 (install-osac)**: `publishTemplates.enabled: true` being the chart default (vs.
+  kind's explicit `false`) is confirmed by reading `charts/osac/values.yaml`, but the actual AAP
+  job-template-sync timing/behavior on a fresh real cluster is unobserved.
+- **Option C, step 6**: the `:443` port on `--grpc-server-address` is inferred from how OpenShift
   Routes terminate TLS by default, not confirmed against a live Route.
 
 Ping back with the actual error if any of these don't match what you see.
@@ -201,26 +207,69 @@ real Let's Encrypt cert, unlike kind's self-signed one).
 
 If you already have `oc` cluster-admin access to a real OpenShift 4.x cluster — not a fresh kind
 cluster, not booted via cluster-tool — `osac-installer` supports installing OSAC directly onto it.
+**This only works cleanly on a cluster with no pre-existing OSAC/cert-manager/Keycloak install** —
+see step 1.
 
-### 1. Install infra + OSAC
+### 1. Preflight: confirm this is a clean cluster
+
+`osac-infra`'s chart hardcodes a fixed set of namespaces and resource names (`cert-manager`,
+`cert-manager-operator`, `openshift-storage`, and a `keycloak` namespace with a `keycloak-tls`
+Certificate, a `keycloak-database` StatefulSet, etc.) — it does not parameterize any of them.
+If objects with those exact names already exist (from any earlier manual install, a different
+Keycloak/cert-manager setup, or a workshop/demo catalog's own bootstrap), Helm will refuse to
+install with an "exists and cannot be imported" error.
+
+**Do not work around that error by labeling/annotating the pre-existing objects with Helm ownership
+metadata.** This was tried live and it breaks things: adopting a pre-existing `keycloak` namespace
+let a later `helm upgrade --install osac-infra` overwrite a pre-existing `Keycloak` custom resource
+that also happened to back that cluster's own OpenShift console SSO — taking it down, with no prior
+Helm revision to roll back to. Check first:
+
+```bash
+oc get namespace cert-manager-operator cert-manager openshift-storage keycloak 2>&1
+oc get oauth cluster -o jsonpath='{.spec.identityProviders[*].name}{"\n"}'
+```
+
+If any of those namespaces already exist, or the second command prints any identity provider
+names, **stop** — this cluster already has infra `osac-infra`'s chart doesn't expect to share, and
+proceeding risks breaking it exactly as above. Use a different, genuinely clean OpenShift cluster
+for this option instead (one where nobody — including a workshop/demo catalog's own bootstrap — has
+already installed cert-manager or Keycloak by hand).
+
+### 2. Install infra
 
 `PROFILE=vmaas-ci` bundles everything (Postgres, cert-manager, Keycloak, AAP via OLM) the same way
 kind/cluster-tool do, despite the CI-sounding name — it's the exact profile `cluster-tool`'s own
 `refresh-after-snapshot.py` uses to install OSAC onto its real OpenShift VMs, so it's expected to
-behave identically against any other real OpenShift cluster. The one thing kind doesn't need that
-this does: a real AAP `license.zip`.
+behave identically against any other clean real OpenShift cluster.
 
 ```bash
 cd osac-installer
 oc login ...   # however you normally authenticate to this cluster
 make install-infra PLATFORM=openshift PROFILE=vmaas-ci NS=osac
+```
+
+Wait for it to finish and verify before moving on — don't proceed to step 3 if anything here is
+still `Pending`/`ContainerCreating`/degraded:
+
+```bash
+oc get pods -n keycloak
+oc get pods -n cert-manager
+oc get keycloak -n keycloak   # status.conditions should show Ready: True
+```
+
+### 3. Install OSAC
+
+The one thing kind doesn't need that this does: a real AAP `license.zip`.
+
+```bash
 make install-osac PLATFORM=openshift PROFILE=vmaas-ci NS=osac AAP_LICENSE_FILE=/path/to/license.zip
 ```
 
 `install-osac` derives the Route hostnames itself from `oc get ingresses.config/cluster` — no
 manual `/etc/hosts` step needed, unlike kind.
 
-### 2. Trust the cluster's CA
+### 4. Trust the cluster's CA
 
 Same mechanism as Option A step 2 — `trust-manager` aggregates the CA into the same `ca-bundle`
 ConfigMap regardless of platform:
@@ -232,14 +281,14 @@ kubectl get configmap ca-bundle -n osac -o json \
   > /tmp/osac-ca/ca-bundle.pem
 ```
 
-### 3. Catalog items publish automatically — no manual seeding needed
+### 5. Catalog items publish automatically — no manual seeding needed
 
 Unlike kind, `publishTemplates.enabled: true` is the chart default (kind is the one platform that
 turns it off) — real AAP syncs the `osac.templates` collection into published `ClusterCatalogItem`s
 on its own. Give it a few minutes after `install-osac` finishes; confirm via the demo client's own
-`list_catalog_items` tool in step 5 rather than a separate CLI check.
+`list_catalog_items` tool in step 7 rather than a separate CLI check.
 
-### 4. Build and run `mcp-server` locally
+### 6. Build and run `mcp-server` locally
 
 Same as Option A step 5, but pointed at the cluster's real Route hostnames instead of kind's
 `*.svc.cluster.local` names:
@@ -262,7 +311,7 @@ The `:443` on `--grpc-server-address` is inferred from how OpenShift Routes term
 default, matching Option B's own Route-based wiring — not independently confirmed against a live
 Route in this session.
 
-### 5. Build and run the reference OAuth demo client
+### 7. Build and run the reference OAuth demo client
 
 Same as Option A step 6, pointed at the same real issuer:
 
