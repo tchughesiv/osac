@@ -1022,6 +1022,55 @@
       "optionalClientScopes": []
     },
     {
+      "id": "b522f74f-c3ec-41db-aaa4-634195f91630",
+      "clientId": "osac-mcp-client",
+      "name": "OSAC MCP OAuth Demo Client",
+      "description": "OAuth demo client for the fulfillment-service MCP server",
+      "rootUrl": "",
+      "adminUrl": "",
+      "baseUrl": "http://localhost:8091",
+      "surrogateAuthRequired": false,
+      "enabled": true,
+      "alwaysDisplayInConsole": false,
+      "clientAuthenticatorType": "client-secret",
+      "redirectUris": [
+        "http://localhost:8091/callback"
+      ],
+      "webOrigins": [],
+      "notBefore": 0,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "publicClient": true,
+      "frontchannelLogout": true,
+      "protocol": "openid-connect",
+      "attributes": {
+        "realm_client": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "backchannel.logout.session.required": "true",
+        "standard.token.exchange.enabled": "false",
+        "post.logout.redirect.uris": "+",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "pkce.code.challenge.method": "S256",
+        "backchannel.logout.revoke.offline.tokens": "false"
+      },
+      "authenticationFlowBindingOverrides": {},
+      "fullScopeAllowed": true,
+      "nodeReRegistrationTimeout": -1,
+      "defaultClientScopes": [
+        "groups",
+        "basic",
+        "username",
+        "organization",
+        "roles",
+        "osac-api"
+      ],
+      "optionalClientScopes": []
+    },
+    {
       "id": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f80",
       "clientId": "osac-ui",
       "name": "OSAC UI",
