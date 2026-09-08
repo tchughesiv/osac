@@ -85,19 +85,20 @@ type ToolBuilder struct {
 // Tool is an instance of the integration test tool that sets up the test environment. Don't create instances of this
 // directly, use the NewTool function instead.
 type Tool struct {
-	logger        *slog.Logger
-	projectDir    string
-	tmpDir        string
-	clusterName   string
-	kubeClient    crclient.Client
-	kubeClientSet *kubernetes.Clientset
-	caPool        *x509.CertPool
-	kcFile        string
-	internalView  *ToolView
-	externalView  *ToolView
-	secret        string
-	jqTool        *jq.Tool
-	cliBinaryPath string
+	logger          *slog.Logger
+	projectDir      string
+	tmpDir          string
+	clusterName     string
+	kubeClient      crclient.Client
+	kubeClientSet   *kubernetes.Clientset
+	caPool          *x509.CertPool
+	kcFile          string
+	internalView    *ToolView
+	externalView    *ToolView
+	secret          string
+	jqTool          *jq.Tool
+	cliBinaryPath   string
+	userTokenSource auth.TokenSource
 }
 
 // ToolView contains the gRPC connections and HTTP clients that can be used to connect to the cluster. This is a
@@ -515,6 +516,7 @@ func (t *Tool) createClients(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	t.userTokenSource = userTokenSource
 
 	// Create gRPC clients:
 	t.internalView = &ToolView{}
@@ -1638,6 +1640,18 @@ func (v *ToolView) Close() error {
 // ProjectDir returns the project directory.
 func (t *Tool) ProjectDir() string {
 	return t.projectDir
+}
+
+// UserTokenSource returns the token source for the regular test user. Unlike UserConn()/UserClient(), which are
+// hardwired to the suite's own internal/external service addresses, this lets a test mint the user's own bearer
+// token for use against some other listener — e.g. a test-local mcpserver instance.
+func (t *Tool) UserTokenSource() auth.TokenSource {
+	return t.userTokenSource
+}
+
+// CaPool returns the trusted CA certificate pool the suite uses to validate the cluster's TLS-serving components.
+func (t *Tool) CaPool() *x509.CertPool {
+	return t.caPool
 }
 
 // Names of the command line tools:
