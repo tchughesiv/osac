@@ -82,14 +82,14 @@ OSAC_CHART     := $(CHARTS)/osac
 INSTANCE_VALUES_EXTRA :=
 INFRA_VALUES_EXTRA :=
 ifeq ($(PLATFORM),kind)
-INFRA_VALUES    := values/dev/kind-infra.yaml
+INFRA_VALUES    ?= values/dev/kind-infra.yaml
 INSTANCE_VALUES := values/dev/kind-instance.yaml
 ifeq ($(PROFILE),dev-full)
 INSTANCE_VALUES_EXTRA := -f values/dev/kind-instance-devfull.yaml
 INFRA_VALUES_EXTRA := -f values/dev/kind-infra-devfull.yaml
 endif
 else ifdef PROFILE
-INFRA_VALUES    := values/$(PROFILE)/infra.yaml
+INFRA_VALUES    ?= values/$(PROFILE)/infra.yaml
 INSTANCE_VALUES := values/$(PROFILE)/instance.yaml
 endif
 
@@ -354,6 +354,7 @@ helm-validate: helm-lint ## Validate all charts (lint + template)
 	done
 	@echo "Validating values/dev/kind-infra.yaml..."
 	helm template osac-infra $(INFRA_CHART) --values values/dev/kind-infra.yaml
+	./scripts/validate-postgres-prerequisites.sh
 	./scripts/validate-keycloak-credentials.sh
 	./scripts/validate-external-keycloak.sh
 	@echo "Validation passed."

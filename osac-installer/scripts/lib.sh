@@ -302,8 +302,13 @@ check_postgres_prerequisites() {
     local values_file="$2"
     local service target_namespace db_url db_host resolved bundled_status
 
-    _bundled_postgres_enabled "${values_file}"
-    bundled_status=$?
+    # OSAC-2113: status 1 means PostgreSQL is externally managed, so capture it
+    # in a conditional rather than letting `set -e` exit before the error path.
+    if _bundled_postgres_enabled "${values_file}"; then
+        bundled_status=0
+    else
+        bundled_status=$?
+    fi
     if [[ ${bundled_status} -eq 2 ]]; then
         _postgres_prereq_error "Values file ${values_file} not found or unreadable."
     elif [[ ${bundled_status} -eq 0 ]]; then

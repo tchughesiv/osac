@@ -163,6 +163,12 @@ variable with short shell assignments rather than wrapping one long quoted value
 An embedded newline becomes part of the Make recipe and leaves Helm with an
 incomplete `--set-string` flag. The installer README has the copy-safe command.
 
+For a short-lived external-RHBK demo, use
+`values/dev/external-rhbk-demo-infra.yaml` as `INFRA_VALUES` in both installation
+phases. It enables only ephemeral bundled PostgreSQL on top of the `dev` profile;
+it does not enable the additional operators in the CI profiles. Durable installs
+instead require external PostgreSQL connection and client-certificate Secrets.
+
 Set `service.auth.issuerUrl`, `service.idp.url`, and
 `service.vault.keycloakIssuerUrl` on the OSAC application release to the external
 route and imported realm. The RHBK operator creates realms only: later chart

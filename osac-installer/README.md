@@ -265,20 +265,56 @@ export INFRA_HELM_ARGS
 
 KUBECONFIG="$HOME/.kube/config" \
 DEPS_HELM_ARGS='--set certManager.enabled=false' \
-make install-infra PLATFORM=openshift PROFILE=dev NS=osac-demo
+make INFRA_VALUES=values/dev/external-rhbk-demo-infra.yaml \
+  install-infra PLATFORM=openshift PROFILE=dev NS=osac-demo
 ```
 
 Keep each `INFRA_HELM_ARGS` assignment on its own physical shell line. A newline
 inside one quoted value is expanded into the Make recipe and causes Helm to see
 an incomplete `--set-string` flag.
 
-Use the same realm in Phase 3, replacing the hostname with the existing
-Keycloak route:
+`external-rhbk-demo-infra.yaml` enables an ephemeral, installer-owned PostgreSQL
+instance for a short-lived demo. It also installs OpenShift Virtualization and
+MultiCluster Engine because the default VMaaS and CaaS controllers require the
+KubeVirt and HyperShift APIs. Those are cluster-scoped operators, so use this
+profile only with cluster-administrator approval. It must be passed to both
+Phase 1 and Phase 3. For a durable installation, use an externally managed
+PostgreSQL deployment and provide its `osac-db-config` and
+`osac-db-client-cert` Secrets instead.
+
+OLM installs those APIs asynchronously. Before Phase 3, wait for them to be
+established:
 
 ```bash
+for crd in virtualmachines.kubevirt.io hostedclusters.hypershift.openshift.io; do
+  KUBECONFIG="$HOME/.kube/config" oc wait --for=create "crd/$crd" --timeout=15m
+  KUBECONFIG="$HOME/.kube/config" oc wait --for=condition=Established "crd/$crd" --timeout=15m
+done
+```
+
+Use the existing Keycloak Route as the discovery endpoint, then derive the
+issuer from its OpenID discovery document. This fails before Helm runs if the
+Route, realm, or issuer is unavailable. It requires `curl` and `jq`.
+
+```bash
+KEYCLOAK_ROUTE_HOST="$(KUBECONFIG="$HOME/.kube/config" oc get route keycloak -n keycloak -o jsonpath='{.spec.host}')"
+[ -n "$KEYCLOAK_ROUTE_HOST" ] || { echo 'ERROR: external Keycloak Route has no host'; exit 1; }
+KEYCLOAK_ROUTE_URL="https://${KEYCLOAK_ROUTE_HOST}"
+KEYCLOAK_ISSUER="$(curl --fail --silent --show-error "$KEYCLOAK_ROUTE_URL/realms/osac-demo/.well-known/openid-configuration" | jq --exit-status --raw-output '.issuer')"
+case "$KEYCLOAK_ISSUER" in
+  */realms/osac-demo) ;;
+  *) echo "ERROR: discovery returned an invalid issuer: $KEYCLOAK_ISSUER"; exit 1 ;;
+esac
+KEYCLOAK_URL="${KEYCLOAK_ISSUER%/realms/osac-demo}"
+
+EXTRA_HELM_ARGS="--set-string service.auth.issuerUrl=$KEYCLOAK_ISSUER"
+EXTRA_HELM_ARGS+=" --set-string service.idp.url=$KEYCLOAK_URL"
+EXTRA_HELM_ARGS+=" --set-string service.vault.keycloakIssuerUrl=$KEYCLOAK_ISSUER"
+export EXTRA_HELM_ARGS
+
 KUBECONFIG="$HOME/.kube/config" \
-EXTRA_HELM_ARGS="--set-string service.auth.issuerUrl=https://sso.apps.example.com/realms/osac-demo --set-string service.idp.url=https://sso.apps.example.com --set-string service.vault.keycloakIssuerUrl=https://sso.apps.example.com/realms/osac-demo" \
-make install-osac PLATFORM=openshift PROFILE=dev NS=osac-demo AAP_LICENSE_FILE=/absolute/path/to/license.zip
+make INFRA_VALUES=values/dev/external-rhbk-demo-infra.yaml \
+  install-osac PLATFORM=openshift PROFILE=dev NS=osac-demo AAP_LICENSE_FILE=/absolute/path/to/license.zip
 ```
 
 RHBK realm imports create a realm but do not update or delete it. The external

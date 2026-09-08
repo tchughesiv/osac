@@ -1,0 +1,36 @@
+# OpenShift demo environment with an externally managed RHBK instance.
+#
+# The existing Keycloak namespace, Keycloak CR, and Route stay outside Helm
+# ownership. Supply keycloak.mode=external and keycloak.external.* through
+# INFRA_HELM_ARGS. This profile adds an ephemeral, installer-owned PostgreSQL
+# instance for a short-lived demo; its data is lost on restart. It also enables
+# the two APIs required by the default CaaS and VMaaS controllers.
+
+# --- OLM Subscriptions (osac-deps) ---
+certManager:
+  enabled: true
+trustManager:
+  enabled: true
+aapOperator:
+  enabled: true
+lvms:
+  enabled: false
+metallb:
+  enabled: false
+cnv:
+  enabled: true
+mce:
+  enabled: true
+
+# --- Infrastructure (osac-infra) ---
+caIssuer:
+  enabled: true
+keycloak:
+  enabled: true
+
+# --- Bundled PostgreSQL (demo only) ---
+bundledPostgres:
+  enabled: true
+  database:
+    name: service
+    user: service

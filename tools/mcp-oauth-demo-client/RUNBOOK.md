@@ -230,11 +230,21 @@ oc get certmanager.operator.openshift.io/cluster
 
 Confirm that the chosen `Keycloak` is Ready and select its externally reachable Route. Do not
 annotate or label the existing RHBK resources for Helm ownership, and do not reuse the cluster's
-existing SSO realm. Derive the URL after confirming the Route name:
+existing SSO realm. Retrieve the Route, then derive the issuer from its OpenID
+discovery document. This fails before Helm runs if the route, realm, or issuer
+is unavailable; it requires `curl` and `jq`.
 
 ```bash
-export KEYCLOAK_URL="https://$(oc get route "$KEYCLOAK_ROUTE" -n "$KEYCLOAK_NAMESPACE" -o jsonpath='{.spec.host}')"
-printf 'External Keycloak: %s\nOSAC realm: %s\n' "$KEYCLOAK_URL" "$OSAC_REALM"
+KEYCLOAK_ROUTE_HOST="$(oc get route "$KEYCLOAK_ROUTE" -n "$KEYCLOAK_NAMESPACE" -o jsonpath='{.spec.host}')"
+[ -n "$KEYCLOAK_ROUTE_HOST" ] || { echo "ERROR: Route $KEYCLOAK_ROUTE has no host"; exit 1; }
+KEYCLOAK_ROUTE_URL="https://${KEYCLOAK_ROUTE_HOST}"
+KEYCLOAK_ISSUER="$(curl --fail --silent --show-error "$KEYCLOAK_ROUTE_URL/realms/$OSAC_REALM/.well-known/openid-configuration" | jq --exit-status --raw-output '.issuer')"
+case "$KEYCLOAK_ISSUER" in
+  */realms/"$OSAC_REALM") ;;
+  *) echo "ERROR: discovery returned an invalid issuer: $KEYCLOAK_ISSUER"; exit 1 ;;
+esac
+export KEYCLOAK_URL="${KEYCLOAK_ISSUER%/realms/$OSAC_REALM}"
+printf 'External Keycloak route: %s\nOSAC issuer: %s\n' "$KEYCLOAK_ROUTE_URL" "$KEYCLOAK_ISSUER"
 ```
 
 ### 2. Install infrastructure without adopting cert-manager or Keycloak
@@ -253,12 +263,18 @@ export INFRA_HELM_ARGS
 
 KUBECONFIG="$KUBECONFIG" \
 DEPS_HELM_ARGS='--set certManager.enabled=false' \
-make install-infra PLATFORM=openshift PROFILE=dev NS="$OSAC_NAMESPACE"
+make INFRA_VALUES=values/dev/external-rhbk-demo-infra.yaml \
+  install-infra PLATFORM=openshift PROFILE=dev NS="$OSAC_NAMESPACE"
 ```
 
 Keep each `INFRA_HELM_ARGS` assignment on its own physical shell line. Do not
 insert a newline inside a quoted value: Make expands it into the Helm recipe,
 which leaves Helm with an incomplete `--set-string` flag.
+
+The demo values file enables an ephemeral PostgreSQL instance in `osac-infra`
+without enabling the broader CI-profile operator set. Use this same
+`INFRA_VALUES` value in Phase 3; it is intentionally unsuitable for durable
+installations because its PostgreSQL data is lost on restart.
 
 This creates a `KeycloakRealmImport` named `osac-<realm>-realm` and an OSAC-only client-secret
 source in the existing Keycloak namespace. It does not change the pre-existing Keycloak instance,
@@ -272,13 +288,31 @@ oc get pods -n osac-infra
 
 ### 3. Install OSAC against the imported realm
 
+The demo profile installs OpenShift Virtualization and MultiCluster Engine because
+the enabled VMaaS and CaaS controllers require the KubeVirt and HyperShift APIs.
+Those are cluster-scoped operators; obtain cluster-administrator approval before
+using this profile. OLM creates their APIs asynchronously, so wait for them before
+running Phase 3:
+
+```bash
+for crd in virtualmachines.kubevirt.io hostedclusters.hypershift.openshift.io; do
+  oc wait --for=create "crd/$crd" --timeout=15m
+  oc wait --for=condition=Established "crd/$crd" --timeout=15m
+done
+```
+
 The one thing kind does not need is a real AAP `license.zip`. Give all OSAC services the external
 realm's issuer URL in Phase 3:
 
 ```bash
+EXTRA_HELM_ARGS="--set-string service.auth.issuerUrl=$KEYCLOAK_ISSUER"
+EXTRA_HELM_ARGS+=" --set-string service.idp.url=$KEYCLOAK_URL"
+EXTRA_HELM_ARGS+=" --set-string service.vault.keycloakIssuerUrl=$KEYCLOAK_ISSUER"
+export EXTRA_HELM_ARGS
+
 KUBECONFIG="$KUBECONFIG" \
-EXTRA_HELM_ARGS="--set-string service.auth.issuerUrl=$KEYCLOAK_URL/realms/$OSAC_REALM --set-string service.idp.url=$KEYCLOAK_URL --set-string service.vault.keycloakIssuerUrl=$KEYCLOAK_URL/realms/$OSAC_REALM" \
-make install-osac PLATFORM=openshift PROFILE=dev NS="$OSAC_NAMESPACE" AAP_LICENSE_FILE=/path/to/license.zip
+make INFRA_VALUES=values/dev/external-rhbk-demo-infra.yaml \
+  install-osac PLATFORM=openshift PROFILE=dev NS="$OSAC_NAMESPACE" AAP_LICENSE_FILE=/path/to/license.zip
 ```
 
 `install-osac` derives OSAC's Route hostnames from `oc get ingresses.config/cluster`; unlike kind,
