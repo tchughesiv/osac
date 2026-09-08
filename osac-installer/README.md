@@ -150,7 +150,81 @@ make install-osac  PLATFORM=openshift PROFILE=<profile> NS=<namespace>   # OSAC 
 | `PLATFORM` | `kind` or `openshift` (required) |
 | `PROFILE` | `dev`, `dev-full`, `vmaas-ci`, `bmaas-ci`, `caas-ci`, or `full-ci` (required; `dev-full` is kind only) |
 | `NS` | Target namespace (required) |
-| `EXTRA_HELM_ARGS` | Extra `--set`/`--set-string` args appended to helm commands |
+| `EXTRA_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac` application release |
+
+#### Deployment MCP PoC on Kind (`PLATFORM=kind`, `PROFILE=dev-full`)
+
+For local development, use the dedicated Kind target. It builds the
+fulfillment-service image from the current checkout, loads it into the Kind
+cluster, enables MCP at
+`https://mcp.osac.localhost:8443`, and installs the normal `dev-full` stack:
+KubeVirt, CDI, AWX, a logical `local` storage tier backed by Kind's `standard`
+local-path StorageClass, the `linux-vm` ComputeInstance catalog item,
+and the ready `tenant1` network.
+
+```bash
+make install-mcp-demo PLATFORM=kind PROFILE=dev-full NS=osac
+```
+
+No registry push or AAP license is required. The image defaults to
+`localhost/fulfillment-service:mcp-demo` and is deployed with
+`imagePullPolicy: Never`; each invocation reloads the freshly built image and
+restarts the MCP deployment, so reusing the tag is safe while iterating. Set
+`MCP_DEMO_IMAGE` only when a different local image name is useful.
+The target also reuses an existing `osac-dev` cluster, so it can resume after
+a partial installation instead of recreating the local cluster. It also builds
+the devstack's AWX Helm dependency automatically, including registering the
+required Helm repository; no separate Helm setup command is needed. It also
+builds and loads a native local helper image containing `grpcurl`, which the
+catalog and tenant hook Jobs need; no registry push is required.
+The catalog seed Job mounts the fulfillment API CA and uses verified TLS for
+the internal gRPC endpoint; it does not use plaintext or disable certificate
+verification. Its `devstack-admin` ServiceAccount mints a short-lived token
+for the existing `admin` ServiceAccount, which is configured as the local
+private-API administrator; no credential is stored in the chart.
+
+At completion, `install-mcp-demo` prints the MCP endpoint and the optional
+one-command Codex setup target:
+
+```bash
+make setup-mcp-demo-codex PLATFORM=kind PROFILE=dev-full NS=osac
+```
+
+This verifies and saves the local CA, merges the pre-registered OAuth client
+and fixed callback into `~/.codex/config.toml` without replacing unrelated
+settings, and starts browser login. It preserves an existing OSAC tool-approval
+preference, makes a private backup before changing an existing config, and
+refuses to overwrite an `osac` entry pointed at another server. On macOS it
+also sets CA trust for Codex Desktop in the current login session; restart the
+app afterward. A new terminal session still needs the printed
+`CODEX_CA_CERTIFICATE` export. The setup target requires Python 3.11 or newer.
+The complete Codex and browser-OAuth walkthrough is in the
+[`MCP demo runbook`](../tools/mcp-oauth-demo-client/RUNBOOK.md).
+To launch the optional MCP Inspector with the temporary local CA and the
+pre-registered OAuth client configuration, run:
+
+```bash
+make mcp-demo-inspector PLATFORM=kind PROFILE=dev-full NS=osac
+```
+
+Use the same local Keycloak users as the dev-full UI (`tenant1_user` or
+`tenant1_admin` and the `default-user-password` stored in
+`keycloak-admin-credentials`). Clients running on the workstation must trust
+the local CA:
+
+```bash
+kubectl -n osac get configmap ca-bundle -o jsonpath='{.data.bundle\.pem}' \
+  > /tmp/osac-ca-bundle.pem
+
+curl --cacert /tmp/osac-ca-bundle.pem \
+  https://mcp.osac.localhost:8443/.well-known/oauth-protected-resource
+```
+
+The Kind runtime is automatically selected on macOS; with Podman, ensure the
+Podman machine is running and `podman info` succeeds before invoking the
+target. The target uses that user-level Podman connection and does not invoke
+`sudo` on macOS. KubeVirt VM execution still depends on the runtime's nested
+virtualization support.
 
 #### Full local dev environment (`PROFILE=dev-full`, kind only)
 
@@ -200,6 +274,33 @@ single-image `kind-load-image` target when loading only that component is useful
 On top of `dev`, `dev-full` adds (via `scripts/dev-full/`, orchestrated by the
 `install-devstack` target):
 
+`install-devstack` builds and loads a native local helper image for its hook
+Jobs. It includes `grpcurl` in addition to the Kubernetes CLI tools, so the
+catalog seed uses the fulfillment internal gRPC API reliably on both amd64 and
+Apple Silicon Kind clusters. The seed Job verifies the API certificate with the
+mounted fulfillment API CA and mints a short-lived `admin` ServiceAccount token
+for its private API requests; no helper-image registry push is required.
+
+`dev-full` creates KubeVirt VMs only when the Kind node exposes hardware
+virtualization (`devices.kubevirt.io/kvm`). A macOS Podman machine normally
+does not expose nested KVM, so it can validate the OSAC request and VM-creation
+path but the guest remains `ErrorUnschedulable` with `Insufficient
+devices.kubevirt.io/kvm`. Use a Linux host with KVM exposed to the container
+runtime for a running guest-VM validation.
+
+By default, the AWX project clones upstream `main`. When validating unmerged
+changes to `osac-aap/`, point it at a pushed branch instead:
+
+```bash
+make install-devstack PLATFORM=kind PROFILE=dev-full NS=osac \
+  DEVSTACK_AWX_PROJECT_URL=https://github.com/<your-fork>/osac.git \
+  DEVSTACK_AWX_PROJECT_BRANCH=<your-branch>
+```
+
+The configuration hook cleans the AWX checkout before its sync and refreshes
+the existing Kubernetes credential, so repeating this command is safe after a
+branch change or a failed project update.
+
 - **Virtualization** — Multus CNI + bridge plugin, KubeVirt (operator + CR, `l2bridge`
   binding), CDI
 - **AWX** — the open-source AAP backend the operator drives: awx-operator + instance,
@@ -210,25 +311,37 @@ On top of `dev`, `dev-full` adds (via `scripts/dev-full/`, orchestrated by the
   unusable on kind) and routed through the shared Envoy Gateway
 - **Seeded catalog** — a `fedora` disk image, `u1-small/medium/large` instance types,
   the `osac.templates.ocp_virt_vm` template, and a `linux-vm` catalog item (shared/global
-  objects; networking is per-tenant and auto-provisioned, see below)
+  objects). The template uses the installer-provided `local` storage tier for its boot
+  disk. On Kind, that logical tier maps to the built-in `standard` local-path StorageClass;
+  `provision-tenant.sh` labels that class for the single `tenant1` tenant. It does not
+  require LVMS, an external storage backend, or the tenant-storage controller. Networking
+  is per-tenant and auto-provisioned, see below.
 - **Ready-to-use tenant** — `provision-tenant.sh` creates a DB tenant (`tenant1`) via the
   private gRPC Tenants API, a matching enabled Keycloak organization, and adds the dev
   users (`tenant1_user`, `tenant1_admin`) as organization members so their tokens carry
   the `organization` claim needed to create resources. Creating the tenant auto-provisions
-  its default VirtualNetwork + Subnet + SecurityGroup via tenant onboarding, so those are
-  ready without manual seeding.
+  its default VirtualNetwork + Subnet + SecurityGroup via tenant onboarding. It also
+  seeds the ready `mcp-demo-isolated` VirtualNetwork with the
+  `mcp-demo-app-subnet` and `mcp-demo-app-sg` resources, so the MCP demo can show
+  a model choosing a non-default network.
 
-The `dev-full` overlay also sets `operator.controllers.networkingProvisioning=false`
-so networking resources reconcile to READY without a real fabric (kind has none).
+The `dev-full` overlay sets `operator.controllers.networkingProvisioning=false` so
+networking resources reconcile to READY without a real fabric (Kind has none), and
+sets `operator.controllers.storage=false` because the one local tenant is bound directly
+to Kind's cluster-scoped `standard` StorageClass. This is deliberately a single-tenant
+local-development shortcut, not a storage model for a shared installation.
 
 **Prerequisites** (beyond the base tools) — enforced by `scripts/dev-full/kind-runtime.sh check`:
 
-- A **rootful** container runtime, because KubeVirt chowns `/dev/kvm`:
-  - **Linux host** — rootful podman (invoked via `sudo`) or Docker
+- A container runtime:
+  - **Linux host** — rootful Podman (invoked via `sudo`) or Docker, because
+    KubeVirt needs node-level access to `/dev/kvm`; rootless user namespaces
+    cannot perform the required device ownership change.
   - **Linux + Distrobox** — the rootful podman host socket (`/run/podman/podman.sock`);
     install the drop-in at `scripts/dev-full/manifests/podman-socket-rootful.conf`
-  - **macOS** — Docker Desktop or Podman Desktop. For Podman, start its machine and
-    verify `podman info` succeeds before installing.
+  - **macOS** — Docker Desktop or Podman Desktop. Podman uses your normal
+    user-level machine connection; no host-root Podman access is needed. Start
+    its machine and verify `podman info` succeeds before installing.
 - **`/dev/kvm`** present (Linux), **`fs.inotify.max_user_instances >= 256`**, and
   `kind`, `helm`, `kubectl`, `jq`, `curl`, `openssl`, `python3` on `PATH`
 - Override runtime detection with `KIND_EXPERIMENTAL_PROVIDER=docker|podman`.
@@ -255,6 +368,9 @@ that has not been built locally.
   `kubectl -n awx get secret awx-admin-password -o jsonpath='{.data.password}' | base64 -d`)
 - Keycloak — `https://keycloak.osac.localhost:8443`
 - OSAC API — `https://fulfillment-api.osac.localhost:8443` (TLS Passthrough, SNI via Envoy)
+- OSAC private CLI API — `https://fulfillment-internal-api.osac.svc.cluster.local:8443`.
+  Add `127.0.0.1 fulfillment-internal-api.osac.svc.cluster.local` to `/etc/hosts`
+  first; the internal name is required for TLS certificate verification.
 
 **Log in** to the UI as `tenant1_user` (or `tenant1_admin`). The password is the
 Keycloak dev-fixtures `default-user-password`:
@@ -280,9 +396,10 @@ cp values/dev/instance.yaml values/<project-name>/instance.yaml
 ```
 
 Prerequisites (cert-manager, AAP, LVMS, MetalLB, CNV, MCE) are installed
-automatically by Phase 1. Each is gated by a values toggle (e.g.,
-`certManager.enabled: true`). See [prerequisites/README.md](prerequisites/README.md)
-for details on what each prerequisite provides.
+automatically by Phase 1. Each is gated by a values toggle (for example,
+`certManager.enabled: true`). See
+[prerequisites/README.md](prerequisites/README.md) for details on what each
+prerequisite provides.
 
 #### AAP Configuration
 

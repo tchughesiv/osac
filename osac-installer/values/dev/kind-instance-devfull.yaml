@@ -12,9 +12,17 @@
 operator:
   image:
     pullPolicy: IfNotPresent
+  resources:
+    limits:
+      memory: 512Mi
+    requests:
+      memory: 128Mi
   controllers:
     networkingProvisioning: false
-    storage: true
+    # Kind's built-in local-path StorageClass is labelled directly for the
+    # single dev tenant by provision-tenant.sh. There is no external storage
+    # backend for the Storage controller to provision in this local profile.
+    storage: false
     volume: true
 
 # --- CSI Driver & Backends ---

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "osac": {
+      "type": "http",
+      "url": "https://mcp.<namespace>.<cluster-domain>",
+      "oauth": {
+        "clientId": "osac-mcp-client"
+      }
+    }
+  }
+}

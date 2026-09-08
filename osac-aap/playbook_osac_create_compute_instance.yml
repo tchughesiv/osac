@@ -61,6 +61,12 @@
               + (compute_instance.spec.additionalDisks | default([]) | map(attribute='storageTier', default='') | list))
              | select | unique | list }}
 
+    - name: Identify requested storage tiers not already resolved for the tenant
+      ansible.builtin.set_fact:
+        _unresolved_requested_tiers: >-
+          {{ _cr_requested_tiers
+             | difference(tenant_storage_class_storage_classes | map(attribute='tier') | list) }}
+
     - name: Filter storage tier definitions to requested tiers for JIT storage
       when: (osac_job_vars.storage_tier_definitions | default([])) | length > 0
       block:
@@ -68,18 +74,22 @@
           ansible.builtin.set_fact:
             _jit_storage_tiers: >-
               {{ osac_job_vars.storage_tier_definitions
-                 | selectattr('name', 'in', _cr_requested_tiers) | list }}
+                 | selectattr('name', 'in', _unresolved_requested_tiers) | list }}
 
-        - name: Warn if no requested tiers found in storage_tier_definitions
+        - name: Warn if no unresolved tiers found in storage_tier_definitions
           ansible.builtin.debug:
             msg: >-
-              None of the requested storage tiers {{ _cr_requested_tiers | to_json }}
+              None of the unresolved storage tiers {{ _unresolved_requested_tiers | to_json }}
               found in storage_tier_definitions.
               Available tiers: {{ osac_job_vars.storage_tier_definitions | map(attribute='name') | list | to_json }}.
               JIT storage provisioning will be skipped.
-          when: _jit_storage_tiers | length == 0
+          when:
+            - _unresolved_requested_tiers | length > 0
+            - _jit_storage_tiers | length == 0
 
     - name: Ensure storage is provisioned for tenant (JIT)
+      # Only unresolved requested tiers are provisioned; operator-resolved
+      # StorageClasses remain authoritative for their matching tiers.
       when: _jit_storage_tiers is defined and _jit_storage_tiers | length > 0
       ansible.builtin.include_role:
         name: osac.service.storage_provider

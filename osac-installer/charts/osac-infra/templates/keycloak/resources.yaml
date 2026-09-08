@@ -529,7 +529,7 @@ data:
 
     echo "Waiting for Keycloak to be ready..."
     for i in $(seq 1 120); do
-      if curl -k -sf https://keycloak:443/realms/osac; then
+      if curl -k -sf https://keycloak:443/realms/osac >/dev/null; then
         echo "Keycloak is ready!"
         break
       fi
@@ -537,16 +537,76 @@ data:
       sleep 5
     done
 
-    set_password() {
-      local username=$1
-      local password=$2
-
-      TOKEN=$(curl -k -sf -X POST https://keycloak:443/realms/master/protocol/openid-connect/token \
+    admin_token() {
+      curl -k -sf -X POST https://keycloak:443/realms/master/protocol/openid-connect/token \
         -H 'Content-Type: application/x-www-form-urlencoded' \
         -d 'grant_type=password' \
         -d 'client_id=admin-cli' \
         --data-urlencode "username=${ADMIN_USERNAME}" \
-        --data-urlencode "password=${ADMIN_PASSWORD}" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+        --data-urlencode "password=${ADMIN_PASSWORD}" | \
+        python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])"
+    }
+
+    ensure_mcp_client() {
+      local client_id="osac-mcp-client"
+      local token client_uuid client_payload scope_name scope_uuid
+
+      echo "Ensuring Keycloak client ${client_id} is registered..."
+      token="$(admin_token)"
+      [[ -n "${token}" ]] || { echo "ERROR: Could not get admin token"; return 1; }
+
+      client_uuid="$(curl -k -sf -X GET \
+        "https://keycloak:443/admin/realms/osac/clients?clientId=${client_id}" \
+        -H "Authorization: Bearer ${token}" | \
+        python3 -c "import sys,json; clients=json.load(sys.stdin); print(next((client['id'] for client in clients if client['clientId'] == sys.argv[1]), ''))" \
+        "${client_id}")"
+      client_payload="$(python3 -c "import json,sys; realm=json.load(open(sys.argv[1])); client=next((client for client in realm['clients'] if client['clientId'] == sys.argv[2]), None); client is not None or sys.exit('missing MCP client in bootstrap realm'); client.pop('id', None); print(json.dumps(client))" \
+        /realm/realm.json "${client_id}")"
+
+      if [[ -n "${client_uuid}" ]]; then
+        curl -k -sf -X PUT "https://keycloak:443/admin/realms/osac/clients/${client_uuid}" \
+          -H "Authorization: Bearer ${token}" \
+          -H 'Content-Type: application/json' \
+          -d "${client_payload}"
+        echo "Updated Keycloak client ${client_id}"
+      else
+        curl -k -sf -X POST https://keycloak:443/admin/realms/osac/clients \
+          -H "Authorization: Bearer ${token}" \
+          -H 'Content-Type: application/json' \
+          -d "${client_payload}"
+        echo "Created Keycloak client ${client_id}"
+
+        client_uuid="$(curl -k -sf -X GET \
+          "https://keycloak:443/admin/realms/osac/clients?clientId=${client_id}" \
+          -H "Authorization: Bearer ${token}" | \
+          python3 -c "import sys,json; clients=json.load(sys.stdin); print(next((client['id'] for client in clients if client['clientId'] == sys.argv[1]), ''))" \
+          "${client_id}")"
+      fi
+
+      [[ -n "${client_uuid}" ]] || { echo "ERROR: Could not resolve Keycloak client ${client_id}"; return 1; }
+
+      # Updating a ClientRepresentation does not update Keycloak's client-scope
+      # mappings. Reconcile optional scopes through their dedicated endpoint so an
+      # existing public MCP client can request a refresh token after an upgrade.
+      while IFS= read -r scope_name; do
+        scope_uuid="$(curl -k -sf -X GET https://keycloak:443/admin/realms/osac/client-scopes \
+          -H "Authorization: Bearer ${token}" | \
+          python3 -c "import sys,json; scopes=json.load(sys.stdin); print(next((scope['id'] for scope in scopes if scope['name'] == sys.argv[1]), ''))" \
+          "${scope_name}")"
+        [[ -n "${scope_uuid}" ]] || { echo "ERROR: Could not resolve Keycloak scope ${scope_name}"; return 1; }
+
+        curl -k -sf -X PUT \
+          "https://keycloak:443/admin/realms/osac/clients/${client_uuid}/optional-client-scopes/${scope_uuid}" \
+          -H "Authorization: Bearer ${token}"
+        echo "Assigned optional Keycloak scope ${scope_name} to ${client_id}"
+      done < <(python3 -c "import json,sys; realm=json.load(open(sys.argv[1])); client=next((client for client in realm['clients'] if client['clientId'] == sys.argv[2]), None); client is not None or sys.exit('missing MCP client in bootstrap realm'); print('\\n'.join(client.get('optionalClientScopes', [])))" /realm/realm.json "${client_id}")
+    }
+
+    set_password() {
+      local username=$1
+      local password=$2
+
+      TOKEN=$(admin_token)
       [[ -n "${TOKEN}" ]] || { echo "ERROR: Could not get admin token"; return 1; }
 
       USER_ID=$(curl -k -sf -X GET "https://keycloak:443/admin/realms/osac/users?username=$username" \
@@ -566,10 +626,11 @@ data:
       echo "Set password for $username"
     }
 
-    # Set all passwords
+    ensure_mcp_client
+
+    # Set all fixture-user passwords.
     echo "Setting passwords for all tenant users..."
     set_password "admin" "${DEFAULT_USER_PASSWORD}"
-    set_password "user" "${DEFAULT_USER_PASSWORD}"
     set_password "tenant1_admin" "${DEFAULT_USER_PASSWORD}"
     set_password "tenant1_user" "${DEFAULT_USER_PASSWORD}"
     set_password "tenant2_admin" "${DEFAULT_USER_PASSWORD}"
@@ -638,6 +699,9 @@ spec:
         volumeMounts:
         - name: scripts
           mountPath: /scripts
+        - name: realm
+          mountPath: /realm
+          readOnly: true
         - name: tmp
           mountPath: /tmp
       volumes:
@@ -645,6 +709,9 @@ spec:
         configMap:
           name: keycloak-password-setup
           defaultMode: 0755
+      - name: realm
+        configMap:
+          name: keycloak-realm
       - name: tmp
         emptyDir: {}
 {{- end }}

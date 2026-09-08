@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="560" viewBox="0 0 1400 560" role="img" aria-labelledby="title desc">
+  <title id="title">OSAC Deployment MCP request flow</title>
+  <desc id="desc">A model host sends the user's OAuth token through the OSAC Deployment MCP to the Fulfillment public API. Fulfillment remains authoritative and the existing downstream OSAC reconciliation and provider workflow is unchanged.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#151515"/>
+    </marker>
+    <style>
+      .box { fill: #ffffff; stroke: #151515; stroke-width: 3; rx: 12; }
+      .mcp { fill: #fef0f0; stroke: #ee0000; stroke-width: 4; rx: 12; }
+      .title { font: 700 26px 'Red Hat Display', Arial, sans-serif; fill: #151515; text-anchor: middle; }
+      .detail { font: 400 19px 'Red Hat Text', Arial, sans-serif; fill: #4d4d4d; text-anchor: middle; }
+      .label { font: 500 18px 'Red Hat Text', Arial, sans-serif; fill: #4d4d4d; text-anchor: middle; }
+      .footer { font: 700 22px 'Red Hat Display', Arial, sans-serif; fill: #a60000; text-anchor: middle; }
+      .flow { fill: none; stroke: #151515; stroke-width: 4; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect x="80" y="125" width="280" height="180" class="box"/>
+  <text x="220" y="180" class="title">Model host</text>
+  <text x="220" y="225" class="detail">Codex / Inspector</text>
+  <text x="220" y="265" class="detail">human-led session</text>
+
+  <rect x="560" y="125" width="280" height="180" class="mcp"/>
+  <text x="700" y="180" class="title">OSAC Deployment</text>
+  <text x="700" y="215" class="title">MCP</text>
+  <text x="700" y="253" class="detail">Go adapter · dedicated pod</text>
+  <text x="700" y="283" class="detail">same Fulfillment image</text>
+
+  <rect x="1040" y="125" width="280" height="180" class="box"/>
+  <text x="1180" y="180" class="title">Fulfillment API</text>
+  <text x="1180" y="220" class="detail">authorization + tenant</text>
+  <text x="1180" y="255" class="detail">catalog + validation + state</text>
+
+  <path d="M360 215 H555" class="flow"/>
+  <path d="M840 215 H1035" class="flow"/>
+
+  <text x="460" y="180" class="label">OAuth</text>
+  <text x="460" y="202" class="label">user token</text>
+  <text x="940" y="180" class="label">public gRPC</text>
+  <text x="940" y="202" class="label">same caller token</text>
+
+  <text x="700" y="360" class="label">model polls current state through MCP with get_resource — accepted does not mean ready</text>
+
+  <rect x="195" y="395" width="1010" height="58" fill="#f2f2f2" stroke="#e0e0e0" rx="8"/>
+  <text x="700" y="432" class="footer">Existing Fulfillment → CR → operator/AAP/KubeVirt workflow remains unchanged</text>
+
+  <text x="700" y="505" class="footer">No shared MCP admin identity • no Kubernetes bypass • no second control plane</text>
+</svg>

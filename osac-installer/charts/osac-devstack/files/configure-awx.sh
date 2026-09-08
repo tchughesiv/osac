@@ -12,6 +12,8 @@
 set -euo pipefail
 
 NS="${1:-${NS:-osac}}"
+AWX_PROJECT_URL="${AWX_PROJECT_URL:-https://github.com/osac-project/osac.git}"
+AWX_PROJECT_BRANCH="${AWX_PROJECT_BRANCH:-main}"
 
 log()  { echo "[+] $*"; }
 warn() { echo "[!] $*" >&2; }
@@ -55,20 +57,25 @@ configure_awx() {
     -d '{"AWX_COLLECTIONS_ENABLED": false, "AWX_ROLES_ENABLED": false, "AWX_TASK_ENV": {"ANSIBLE_JINJA2_NATIVE": "true"}}' >/dev/null
 
   # Project from the osac mono-repo.
-  local project_id
+  local project_id project_payload project_patch
+  project_payload=$(jq -cn \
+    --arg scm_url "${AWX_PROJECT_URL}" \
+    --arg scm_branch "${AWX_PROJECT_BRANCH}" \
+    '{name: "osac-aap", organization: 1, scm_type: "git", scm_url: $scm_url, scm_branch: $scm_branch, scm_clean: true, scm_update_on_launch: false}')
+  project_patch=$(jq -cn \
+    --arg scm_url "${AWX_PROJECT_URL}" \
+    --arg scm_branch "${AWX_PROJECT_BRANCH}" \
+    '{scm_url: $scm_url, scm_branch: $scm_branch, scm_clean: true}')
   project_id=$(curl -s -X POST "${api}/projects/" -H "Authorization: Bearer ${awx_token}" \
-    -H "Content-Type: application/json" -d '{
-      "name": "osac-aap", "organization": 1, "scm_type": "git",
-      "scm_url": "https://github.com/osac-project/osac.git",
-      "scm_branch": "main", "scm_update_on_launch": false
-    }' | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+    -H "Content-Type: application/json" -d "${project_payload}" | \
+    python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
   if [[ -z "$project_id" ]]; then
     project_id=$(curl -s -H "Authorization: Bearer ${awx_token}" "${api}/projects/?name=osac-aap" | \
       python3 -c "import json,sys; d=json.load(sys.stdin); print(d['results'][0]['id'] if d.get('results') else '')")
     if [[ -n "$project_id" ]]; then
       curl -s -X PATCH "${api}/projects/${project_id}/" -H "Authorization: Bearer ${awx_token}" \
         -H "Content-Type: application/json" \
-        -d '{"scm_url": "https://github.com/osac-project/osac.git", "scm_branch": "main"}' >/dev/null
+        -d "${project_patch}" >/dev/null
       curl -s -X POST "${api}/projects/${project_id}/update/" -H "Authorization: Bearer ${awx_token}" >/dev/null
     fi
   fi
@@ -82,12 +89,14 @@ configure_awx() {
     sleep 5
   done
   log "AWX project synced: ${proj_status}"
+  if [[ "${proj_status}" != "successful" ]]; then
+    warn "AWX project sync failed; refusing to configure job templates"
+    return 1
+  fi
 
-  # Job templates (compute + networking).
-  local compute_extra_vars
-  compute_extra_vars="tenant_storage_classes:
-  - name: standard
-    tier: local"
+  # Job templates (compute + networking). Resolved tenant storage classes are
+  # supplied by the operator in osac_job_vars at launch; a template-level value
+  # would be ignored by the compute playbook and could mask a missing binding.
   local entry name playbook
   for entry in \
     "osac-create-compute-instance:osac-aap/playbook_osac_create_compute_instance.yml" \
@@ -97,8 +106,7 @@ configure_awx() {
       -H "Content-Type: application/json" -d "{
         \"name\": \"${name}\", \"organization\": 1, \"inventory\": ${inv_id},
         \"project\": ${project_id}, \"playbook\": \"${playbook}\",
-        \"ask_variables_on_launch\": true,
-        \"extra_vars\": $(echo "${compute_extra_vars}" | jq -Rs .)
+        \"ask_variables_on_launch\": true
       }" >/dev/null
     log "  template: ${name}"
   done
@@ -125,18 +133,43 @@ configure_awx() {
   kubectl create clusterrolebinding awx-runner-admin --clusterrole=cluster-admin \
     --serviceaccount="${NS}:awx-runner" 2>/dev/null || true
 
-  local awx_runner_token cluster_ca cred_id
+  local awx_runner_token cluster_ca credential_inputs credential_payload credential_patch cred_id
   awx_runner_token=$(kubectl -n "${NS}" create token awx-runner --duration=87600h)
-  cluster_ca=$(kubectl config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d)
-  cred_id=$(curl -s -X POST "${api}/credentials/" -H "Authorization: Bearer ${awx_token}" \
-    -H "Content-Type: application/json" -d "{
-      \"name\": \"kind-cluster\", \"organization\": 1, \"credential_type\": 17,
-      \"inputs\": {
-        \"host\": \"https://kubernetes.default.svc.cluster.local:443\",
-        \"bearer_token\": \"${awx_runner_token}\", \"verify_ssl\": true,
-        \"ssl_ca_cert\": $(echo "${cluster_ca}" | jq -Rs .)
-      }
-    }" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
+  # The Helm hook runs in-cluster, where kubectl has no local kubeconfig to
+  # inspect. Use its mounted service-account CA; retain the kubeconfig fallback
+  # for direct, local execution of this script.
+  if [[ -r /var/run/secrets/kubernetes.io/serviceaccount/ca.crt ]]; then
+    cluster_ca=$(</var/run/secrets/kubernetes.io/serviceaccount/ca.crt)
+  else
+    cluster_ca=$(kubectl config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d)
+  fi
+  if [[ -z "${cluster_ca}" ]]; then
+    warn "Unable to determine the Kubernetes API CA certificate"
+    return 1
+  fi
+  credential_inputs=$(jq -cn \
+    --arg host 'https://kubernetes.default.svc.cluster.local:443' \
+    --arg bearer_token "${awx_runner_token}" \
+    --arg ssl_ca_cert "${cluster_ca}" \
+    '{host: $host, bearer_token: $bearer_token, verify_ssl: true, ssl_ca_cert: $ssl_ca_cert}')
+  credential_payload=$(jq -cn --argjson inputs "${credential_inputs}" \
+    '{name: "kind-cluster", organization: 1, credential_type: 17, inputs: $inputs}')
+  credential_patch=$(jq -cn --argjson inputs "${credential_inputs}" '{inputs: $inputs}')
+  cred_id=$(curl -fsS -H "Authorization: Bearer ${awx_token}" \
+    "${api}/credentials/?name=kind-cluster" | \
+    python3 -c "import json,sys; d=json.load(sys.stdin); print(d['results'][0]['id'] if d.get('results') else '')")
+  if [[ -n "${cred_id}" ]]; then
+    curl -fsS -X PATCH "${api}/credentials/${cred_id}/" -H "Authorization: Bearer ${awx_token}" \
+      -H "Content-Type: application/json" -d "${credential_patch}" >/dev/null
+  else
+    cred_id=$(curl -fsS -X POST "${api}/credentials/" -H "Authorization: Bearer ${awx_token}" \
+      -H "Content-Type: application/json" -d "${credential_payload}" | \
+      python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
+  fi
+  if [[ -z "${cred_id}" ]]; then
+    warn "Failed to create the AWX Kubernetes credential"
+    return 1
+  fi
 
   # Attach credential to all job templates.
   local templates jt_id

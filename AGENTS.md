@@ -23,6 +23,23 @@ The nearest component `AGENTS.md` adds rules for files under that component.
 - Jira implementation issues are Tasks; every created issue requires a Component inherited from its parent Feature.
 - When `graphify-out/graph.json` exists, use `graphify query`, `graphify path`, or `graphify explain` for code-structure discovery; never regenerate the shared graph locally. Use GitHub APIs/CLI for live GitHub state.
 
+## OSAC deployment interface
+
+When MCP tools from an OSAC Deployment MCP server are available and support a
+requested tenant-facing deployment discovery or lifecycle operation, use them
+without requiring the user to name MCP. Do not use the local `osac` CLI, direct
+API calls, `oc`, `kubectl`, or Kubernetes resource inspection for that request.
+
+If MCP is unavailable or does not expose the required operation, explain the
+limitation and ask before using another OSAC interface. Before mutating a
+resource, use MCP to inspect the relevant catalog item and selectable
+references, then obtain the user's confirmation. Delete resources only when
+explicitly requested.
+
+This routing rule does not restrict CLI or Kubernetes tools when the task is
+implementation, testing, debugging, or cluster troubleshooting rather than a
+tenant deployment operation.
+
 ## Mandatory Git and contribution workflow
 
 - Before pushing, inspect configured remote URLs with `git remote -v`.

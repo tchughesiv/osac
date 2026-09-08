@@ -44,7 +44,9 @@ spec:
       - name: seed-catalog
         image: {{ .Values.cliImage }}
         command: ["/bin/bash", "/scripts/seed-catalog-simple.sh"]
-        args: ["{{ .Values.osacNamespace }}"]
+        args:
+        - {{ .Values.catalog.internalApiService | quote }}
+        - {{ .Values.catalog.internalApiPort | quote }}
         env:
         - name: NS
           value: {{ .Values.osacNamespace | quote }}
@@ -52,19 +54,18 @@ spec:
           value: {{ .Values.catalog.internalApiService | quote }}
         - name: INTERNAL_PORT
           value: {{ .Values.catalog.internalApiPort | quote }}
-        - name: CATALOG_YAML
-          value: "/config/catalog-seed.yaml"
         volumeMounts:
         - name: scripts
           mountPath: /scripts
-        - name: catalog-config
-          mountPath: /config
+        - name: fulfillment-api-tls
+          mountPath: /etc/fulfillment-api-tls
+          readOnly: true
       volumes:
       - name: scripts
         configMap:
           name: {{ include "osac-devstack.fullname" . }}-scripts
           defaultMode: 0755
-      - name: catalog-config
-        configMap:
-          name: {{ include "osac-devstack.fullname" . }}-catalog-seed
+      - name: fulfillment-api-tls
+        secret:
+          secretName: fulfillment-api-tls
 {{- end }}

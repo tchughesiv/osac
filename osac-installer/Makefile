@@ -12,13 +12,16 @@
 #   make uninstall-osac  PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
 #   make uninstall-infra PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
 #   make kind-load-images  PLATFORM=kind PROFILE=dev-full NS=osac
+#   make install-mcp-demo PLATFORM=kind PROFILE=dev-full NS=osac [MCP_DEMO_IMAGE=localhost/fulfillment-service:mcp-demo]
+#   make setup-mcp-demo-codex PLATFORM=kind PROFILE=dev-full NS=osac
+#   make mcp-demo-inspector PLATFORM=kind PROFILE=dev-full NS=osac
 #   make test            PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac  SUITE=all|fulfillment|operator|bmf
 #
 # PROFILE=dev-full (kind only) is a superset of dev: it runs the same chart-based
 # control plane, then layers on the full local dev stack (KubeVirt/CDI/Multus, AWX,
-# UI, seeded catalog) via scripts/dev-full/. It needs a rootful container runtime
-# (Linux: rootful podman or Docker; macOS: Docker Desktop) and /dev/kvm on Linux —
-# see scripts/dev-full/kind-runtime.sh and README.md.
+# UI, seeded catalog) via scripts/dev-full/. Linux needs rootful Podman (or Docker)
+# and /dev/kvm for KubeVirt; macOS uses the invoking user's Docker Desktop or Podman
+# Desktop connection without sudo. See scripts/dev-full/kind-runtime.sh and README.md.
 #
 # Helm chart management (no parameters required):
 #   make helm-lint
@@ -34,11 +37,21 @@ FULFILLMENT_GINKGO_ARGS ?=
 # -- Fail-fast parameter validation ------------------------------------
 # Guards fire at parse time, gated by MAKECMDGOALS so `make help` works.
 
-ALL_TARGETS := install uninstall install-infra uninstall-infra install-osac uninstall-osac install-devstack kind-load-images test
+ALL_TARGETS := install uninstall install-infra uninstall-infra install-osac uninstall-osac install-devstack kind-load-images install-mcp-demo setup-mcp-demo-codex mcp-demo-inspector test
 
 ifneq ($(filter $(ALL_TARGETS),$(MAKECMDGOALS)),)
 ifndef PLATFORM
 $(error PLATFORM is required (kind|openshift))
+endif
+
+MCP_DEMO_TARGETS := install-mcp-demo setup-mcp-demo-codex mcp-demo-inspector
+ifneq ($(filter $(MCP_DEMO_TARGETS),$(MAKECMDGOALS)),)
+ifneq ($(PLATFORM)/$(PROFILE),kind/dev-full)
+$(error $(MCP_DEMO_TARGETS) requires PLATFORM=kind PROFILE=dev-full)
+endif
+ifneq ($(NS),osac)
+$(error $(MCP_DEMO_TARGETS) requires NS=osac because dev-full is a single local instance)
+endif
 endif
 ifeq ($(filter $(PLATFORM),kind openshift),)
 $(error PLATFORM=$(PLATFORM) is invalid; must be kind or openshift)
@@ -75,6 +88,9 @@ CHARTS         := charts
 DEPS_CHART     := $(CHARTS)/osac-deps
 INFRA_CHART    := $(CHARTS)/osac-infra
 OSAC_CHART     := $(CHARTS)/osac
+DEVSTACK_CHART := $(CHARTS)/osac-devstack
+DEVSTACK_AWX_REPO := awx-operator
+DEVSTACK_AWX_REPO_URL := https://ansible-community.github.io/awx-operator-helm/
 
 # Values file selection: kind uses kind-specific files, OpenShift uses profile files.
 # dev-full reuses the identical dev control-plane values, plus a small overlay that
@@ -99,15 +115,28 @@ endif
 # provider selection aligned.
 KIND_RUNTIME := scripts/dev-full/kind-runtime.sh
 KIND_ARM64_CLI_IMAGE := quay.io/openshift/origin-cli:4.20.0
+# The local Kind demo builds this image and loads it directly into the cluster.
+MCP_DEMO_IMAGE ?= localhost/fulfillment-service:mcp-demo
+MCP_DEMO_HOSTNAME := mcp.osac.localhost
+MCP_DEMO_PORT := 8443
+MCP_DEMO_URL := https://$(MCP_DEMO_HOSTNAME):$(MCP_DEMO_PORT)
+# dev-full hooks use grpcurl as well as kubectl, curl, jq, and Python. Build a
+# native helper image locally and load it into Kind rather than relying on a
+# developer to publish or pre-pull one.
+DEVSTACK_CLI_TOOLS_IMAGE ?= localhost/osac-devstack-cli-tools:dev
+DEVSTACK_CLI_TOOLS_ARCH ?= $(shell arch="$$(uname -m)"; if [ "$$arch" = x86_64 ]; then echo amd64; elif [ "$$arch" = aarch64 ] || [ "$$arch" = arm64 ]; then echo arm64; else echo "$$arch"; fi)
 
 # quay.io/openshift/origin-cli:4.20.0 has no arm64 manifest. On Apple Silicon,
 # build a compatible local image with the same tag so every chart can continue
 # using the shared cliImage value without platform-specific values files.
+HOST_IS_MAC := $(shell if [ "$$(uname -s)" = "Darwin" ]; then echo true; fi)
 HOST_IS_MAC_ARM := $(shell if [ "$$(uname -s)" = "Darwin" ] && { [ "$$(uname -m)" = "arm64" ] || [ "$$(sysctl -in hw.optional.arm64 2>/dev/null)" = "1" ]; }; then echo true; fi)
 KIND_ARM64_CLI_IMAGE_SCRIPT := scripts/dev-full/build-arm64-cli-image.sh
 # Apple Silicon and dev-full use the runtime wrapper. Plain non-macOS dev
 # keeps its existing direct Kind/container-tool behavior.
 KIND_RUNTIME_REQUIRED := $(if $(filter true,$(HOST_IS_MAC_ARM)),true,$(if $(filter dev-full,$(PROFILE)),true,false))
+DEVSTACK_AWX_PROJECT_URL ?= https://github.com/osac-project/osac.git
+DEVSTACK_AWX_PROJECT_BRANCH ?= main
 
 # Container tool and Kind cluster config.
 CONTAINER_TOOL ?= $(or $(shell command -v podman 2>/dev/null),$(shell command -v docker 2>/dev/null),$(error neither podman nor docker found in PATH))
@@ -134,10 +163,13 @@ KIND_KUBECONFIG := $(HOME)/.kube/$(KIND_CLUSTER_NAME)-kind-root.kubeconfig
 else
 KIND_KUBECONFIG := $(HOME)/.kube/$(KIND_CLUSTER_NAME)-kind.kubeconfig
 endif
-# Use the caller's KUBECONFIG if they set a non-empty one, otherwise the kind file.
-# `?=` is not enough: a shell that exports KUBECONFIG= (empty-but-defined) would keep
-# it empty and helm/kubectl would fall back to localhost:8080. `$(or ...)` skips empty.
-export KUBECONFIG := $(or $(KUBECONFIG),$(KIND_KUBECONFIG))
+ifeq ($(PLATFORM),kind)
+# The Kind runtime writes this file when it creates or reuses the local cluster.
+# Always select it: a workstation may still export KUBECONFIG for a remote
+# OpenShift cluster, and Helm otherwise upgrades that unrelated cluster.
+# Set KIND_KUBECONFIG explicitly when a non-default local path is needed.
+export KUBECONFIG := $(KIND_KUBECONFIG)
+endif
 
 # UI has no component Makefile, so the installer keeps its local image reference.
 KIND_UI_IMAGE := ghcr.io/osac-project/osac-ui:latest
@@ -169,6 +201,41 @@ define kind-container-build
 		$(KIND_RUNTIME_CMD) container build $(1); \
 	else \
 		$(CONTAINER_TOOL) build $(1); \
+	fi
+endef
+
+# Podman on macOS runs inside a VM. Stream exactly the files copied by the
+# fulfillment-service Containerfile into that VM so buildah sees a Linux build
+# context rather than a host path. This is shared by the MCP image push and the
+# Kind integration-test image load paths.
+define build-fulfillment-service-image
+	@if [ "$(HOST_IS_MAC)" = "true" ] && [ "$$(basename $(CONTAINER_TOOL))" = "podman" ]; then \
+		tar -C .. -cf - \
+			go.work \
+			proto \
+			fulfillment-service \
+			bare-metal-fulfillment-operator \
+			osac-operator/go.mod osac-operator/go.sum osac-operator/api \
+			osac-csi-driver/go.mod osac-csi-driver/go.sum \
+			osac-metering/schema/go.mod osac-metering/schema/go.sum \
+			osac-metering/metering-service/go.mod osac-metering/metering-service/go.sum \
+			osac-metering/adapters/go.mod osac-metering/adapters/go.sum \
+			osac-ui/proxy/go.mod osac-ui/proxy/go.sum | \
+		$(CONTAINER_TOOL) machine ssh -- podman build $(if $(strip $(2)),--platform="$(2)") -t $(1) -f fulfillment-service/Containerfile -; \
+	else \
+		$(CONTAINER_TOOL) build $(if $(strip $(2)),--platform="$(2)") -t $(1) -f ../fulfillment-service/Containerfile ..; \
+	fi
+endef
+
+# Build the dev-full hook image for the Kind node's native architecture. The
+# macOS Podman machine needs a streamed context for the same reason as the
+# fulfillment-service image build above.
+define build-devstack-cli-tools-image
+	@if [ "$(HOST_IS_MAC)" = "true" ] && [ "$$(basename $(CONTAINER_TOOL))" = "podman" ]; then \
+		tar -C $(DEVSTACK_CHART) -cf - Containerfile.cli-tools | \
+		$(CONTAINER_TOOL) machine ssh -- podman build --build-arg TARGETARCH="$(2)" -t $(1) -f Containerfile.cli-tools -; \
+	else \
+		$(CONTAINER_TOOL) build --build-arg TARGETARCH="$(2)" -t $(1) -f $(DEVSTACK_CHART)/Containerfile.cli-tools $(DEVSTACK_CHART); \
 	fi
 endef
 
@@ -324,11 +391,19 @@ ifneq ($(PLATFORM)/$(PROFILE),kind/dev-full)
 endif
 	# Pre-install: node-level CNI setup (requires host container runtime access)
 	$(KIND_RUNTIME_ENV) scripts/dev-full/install-virt-node-setup.sh $(KIND_CLUSTER_NAME)
+	# Build and load the native helper used by catalog, tenant, and AWX hook Jobs.
+	$(call build-devstack-cli-tools-image,$(DEVSTACK_CLI_TOOLS_IMAGE),$(DEVSTACK_CLI_TOOLS_ARCH))
+	$(call kind-load-image,$(DEVSTACK_CLI_TOOLS_IMAGE))
 	# Helm install: operators + AWX + UI + seeding
-	helm upgrade --install osac-devstack charts/osac-devstack \
+	helm repo add $(DEVSTACK_AWX_REPO) $(DEVSTACK_AWX_REPO_URL) --force-update
+	helm dependency build $(DEVSTACK_CHART)
+	helm upgrade --install osac-devstack $(DEVSTACK_CHART) \
 		--namespace $(NS) --create-namespace \
 		--set osacNamespace=$(NS) \
 		--set kindClusterName=$(KIND_CLUSTER_NAME) \
+		--set-string cliImage=$(DEVSTACK_CLI_TOOLS_IMAGE) \
+		--set-string awx.project.url=$(DEVSTACK_AWX_PROJECT_URL) \
+		--set-string awx.project.branch=$(DEVSTACK_AWX_PROJECT_BRANCH) \
 		--wait --timeout 30m
 
 ##@ Composite
@@ -339,6 +414,42 @@ install: install-infra install-osac install-devstack ## Full install: infra + os
 else
 install: install-infra install-osac ## Full install: infra + osac (PLATFORM= PROFILE= required)
 endif
+
+.PHONY: install-mcp-demo
+install-mcp-demo: ## Install the local Kind dev-full MCP demo using a freshly built, loaded image
+	$(MAKE) install-infra PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS)
+	$(call build-fulfillment-service-image,$(MCP_DEMO_IMAGE))
+	$(call kind-load-image,$(MCP_DEMO_IMAGE))
+	$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
+		EXTRA_HELM_ARGS="--set service.mcp.enabled=true --set-string service.mcp.externalHostname=$(MCP_DEMO_HOSTNAME) --set service.mcp.externalPort=$(MCP_DEMO_PORT) --set service.images.service=$(MCP_DEMO_IMAGE) --set service.images.pullPolicy=Never"
+	$(MAKE) install-devstack PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS)
+	kubectl rollout restart deployment/fulfillment-mcp-server -n $(NS)
+	kubectl rollout status deployment/fulfillment-mcp-server -n $(NS) --timeout=5m
+	@printf '\nMCP demo is ready.\n'
+	@printf '  Endpoint:  %s\n' '$(MCP_DEMO_URL)'
+	@printf '  Readiness: kubectl -n %s rollout status deployment/fulfillment-mcp-server --timeout=5m\n' '$(NS)'
+	@printf '\nConnect Codex (CA, OAuth config, browser login):\n'
+	@printf '  make -C %q setup-mcp-demo-codex PLATFORM=kind PROFILE=dev-full NS=%s\n' '$(CURDIR)' '$(NS)'
+	@printf '  Then start a new Codex session and run /mcp to confirm osac is connected.\n'
+	@printf '  Optional Inspector: make -C %q mcp-demo-inspector PLATFORM=kind PROFILE=dev-full NS=%s\n' '$(CURDIR)' '$(NS)'
+
+.PHONY: setup-mcp-demo-codex
+setup-mcp-demo-codex: ## Configure Codex for the local Kind MCP demo and start browser login
+	bash scripts/configure-codex-mcp.sh "$(NS)" "$(MCP_DEMO_URL)"
+
+.PHONY: mcp-demo-inspector
+mcp-demo-inspector: ## Launch MCP Inspector for the local Kind MCP demo
+	@set -euo pipefail; \
+		temp_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/osac-mcp-inspector.XXXXXX")"; \
+		kubectl -n $(NS) get configmap ca-bundle -o jsonpath='{.data.bundle\.pem}' > "$$temp_dir/kind-ca.pem"; \
+		jq --arg url "$(MCP_DEMO_URL)" '.mcpServers.osac.url = $$url' \
+			../tools/mcp-oauth-demo-client/inspector-osac.config.json > "$$temp_dir/inspector-osac.config.json"; \
+		printf 'Launching MCP Inspector for %s\n' '$(MCP_DEMO_URL)'; \
+		printf 'Temporary Inspector files: %s\n' "$$temp_dir"; \
+		NODE_EXTRA_CA_CERTS="$$temp_dir/kind-ca.pem" \
+			npx --yes @modelcontextprotocol/inspector@2.6.0 \
+				--config "$$temp_dir/inspector-osac.config.json" \
+				--server osac
 
 .PHONY: uninstall
 uninstall: uninstall-osac uninstall-infra ## Full uninstall: osac + infra (PLATFORM= PROFILE= required)
@@ -353,7 +464,7 @@ ifeq ($(SUITE),all)
 	$(MAKE) test SUITE=bmf
 endif
 ifeq ($(SUITE),fulfillment)
-	$(call kind-container-build,-t localhost/fulfillment-service:it -f ../fulfillment-service/Containerfile ..)
+	$(call build-fulfillment-service-image,localhost/fulfillment-service:it)
 	$(call kind-load-image,localhost/fulfillment-service:it)
 	$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
 		EXTRA_HELM_ARGS="--set service.images.service=localhost/fulfillment-service:it --set operator.enabled=false --set operator.networkManagers.enabled=true --set global.networking.networkClass.enabled=false"
@@ -385,21 +496,24 @@ endif
 sync-charts: helm-deps ## Rebuild chart dependencies (alias for helm-deps)
 
 .PHONY: helm-deps
-helm-deps: ## Build Helm chart dependencies
+helm-deps: ## Build all local Helm chart dependencies
 	helm dependency build $(OSAC_CHART)
+	helm repo add $(DEVSTACK_AWX_REPO) $(DEVSTACK_AWX_REPO_URL) --force-update
+	helm dependency build $(DEVSTACK_CHART)
 
 .PHONY: helm-lint
-helm-lint: ## Lint all charts
+helm-lint: helm-deps ## Lint all charts
 	helm lint $(DEPS_CHART)
 	helm lint $(INFRA_CHART)
-	helm dependency build $(OSAC_CHART)
 	helm lint $(OSAC_CHART)
+	helm lint $(DEVSTACK_CHART)
 
 .PHONY: helm-template
-helm-template: ## Dry-run render all templates
+helm-template: helm-deps ## Dry-run render all templates
 	helm template osac-deps $(DEPS_CHART)
 	helm template osac-infra $(INFRA_CHART)
 	helm template osac $(OSAC_CHART)
+	helm template osac-devstack $(DEVSTACK_CHART)
 
 .PHONY: helm-validate
 helm-validate: helm-lint helm-networking-test ## Validate all charts (lint + template)

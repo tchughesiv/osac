@@ -19,7 +19,8 @@ operator:
     tag: latest
     pullPolicy: Always
   aap:
-    url: "http://awx-service.awx.svc.cluster.local:80/api"
+    # dev-full deploys AWX beside OSAC in the osac namespace.
+    url: "http://awx-service.osac.svc.cluster.local:80/api"
     insecureSkipVerify: "true"
     statusPollInterval: "30s"
     templatePrefix: "osac"

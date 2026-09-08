@@ -159,9 +159,49 @@ All targets require `PLATFORM=kind|openshift PROFILE=dev|vmaas-ci|... NS=<namesp
 | `make install` | Full install (infra + osac) |
 | `make install-infra` | Infrastructure only (osac-deps + osac-infra) |
 | `make install-osac` | OSAC instance only |
+| `make install-mcp-demo` | Install the local Kind dev-full MCP demo |
+| `make setup-mcp-demo-codex` | Configure Codex for the local MCP demo |
 | `make uninstall` | Full uninstall (reverse order) |
 | `make test` | Run integration tests (SUITE= required) |
 | `make helm-lint` | Lint all charts |
+
+### Local Deployment MCP PoC on Kind
+
+For a self-contained local ComputeInstance demo, use Kind `dev-full` rather
+than an OpenShift profile:
+
+```bash
+make install-mcp-demo PLATFORM=kind PROFILE=dev-full NS=osac
+make setup-mcp-demo-codex PLATFORM=kind PROFILE=dev-full NS=osac
+```
+
+`install-mcp-demo` creates or reuses the Kind cluster, builds the checkout's
+fulfillment-service image for the local architecture, loads it into Kind, and
+enables MCP at `https://mcp.osac.localhost:8443`. It deploys the image with
+`imagePullPolicy: Never` and restarts the MCP deployment after every build,
+so a registry and AAP license are not required for local iteration.
+`setup-mcp-demo-codex` is separate and opt-in; it configures the local CA and
+pre-registered OAuth client, then starts browser login.
+
+`dev-full` uses Kind's built-in `standard` local-path StorageClass for its one
+seeded tenant (`tenant1`). The installer labels that cluster-scoped class as the
+tenant's logical `local` storage tier and disables external tenant-storage
+provisioning. This is intentional for the single-tenant local demo; do not use
+that pattern for a shared installation.
+
+The demo also retains tenant onboarding's default network and seeds a ready
+`mcp-demo-isolated` VirtualNetwork with `mcp-demo-app-subnet` and
+`mcp-demo-app-sg`. The `linux-vm` catalog item permits its network attachment
+to be overridden, so a model can discover and select these existing resources.
+
+The endpoint offers allowlisted reads of ComputeInstance catalog items and
+ComputeInstances, plus create and delete operations for ComputeInstances. It
+does not deploy an application into a VM. The complete browser-OAuth and
+Inspector and Codex walkthrough is in
+[`../../tools/mcp-oauth-demo-client/RUNBOOK.md`](../../tools/mcp-oauth-demo-client/RUNBOOK.md).
+The install target finishes by printing its endpoint and the optional Codex
+setup command. The runbook also documents the equivalent manual CA and OAuth
+client configuration when the setup target cannot be used.
 
 ## Uninstall
 
