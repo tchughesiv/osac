@@ -23,9 +23,15 @@ metadata:
     "helm.sh/hook-delete-policy": before-hook-creation
     "helm.sh/hook-weight": "15"
 rules:
+  {{- if eq .Values.keycloak.mode "external" }}
+  - apiGroups: ["k8s.keycloak.org"]
+    resources: ["keycloakrealmimports"]
+    verbs: ["get", "list", "watch"]
+  {{- else }}
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -80,6 +86,14 @@ spec:
           env:
             - name: HOME
               value: /tmp
+            - name: KEYCLOAK_MODE
+              value: {{ .Values.keycloak.mode | quote }}
+            - name: KEYCLOAK_NAMESPACE
+              value: {{ include "osac-infra.keycloakNamespace" . | quote }}
+            {{- if eq .Values.keycloak.mode "external" }}
+            - name: KEYCLOAK_REALM_IMPORT_NAME
+              value: {{ printf "osac-%s-realm" (required "keycloak.external.realmName is required when keycloak.mode=external" .Values.keycloak.external.realmName) | trunc 63 | trimSuffix "-" | quote }}
+            {{- end }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp

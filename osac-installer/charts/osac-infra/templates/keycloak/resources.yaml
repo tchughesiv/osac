@@ -1,4 +1,4 @@
-{{- if .Values.keycloak.enabled }}
+{{- if and .Values.keycloak.enabled (eq .Values.keycloak.mode "managed") }}
 apiVersion: v1
 kind: Namespace
 metadata:

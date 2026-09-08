@@ -16,16 +16,11 @@ risk, by option:
 
 - **Option A, step 4**: the catalog-item-seeding `grpcurl` payloads — field names read straight off
   the `.proto` files, but no live server has validated them.
-- **Option C, step 2 (install-infra)**: this *was* attempted live, against a cluster that turned out
-  to have pre-existing `cert-manager`/`openshift-storage`/`keycloak` infra from an earlier manual
-  install. Working around Helm's "exists and cannot be imported" errors by labeling/annotating those
-  pre-existing objects with Helm ownership metadata — the obvious-looking fix — is a real footgun: it
-  let a later `helm upgrade --install osac-infra` overwrite a pre-existing RHBK `Keycloak` custom
-  resource that was *also* backing that cluster's own OpenShift console SSO, breaking it, with no
-  Helm revision to roll back to (it was that release's first successful install). **Do not do this**
-  — see the preflight check in step 1 below. On a genuinely clean cluster (no prior manual
-  cert-manager/Keycloak install), `install-infra` itself is expected to work cleanly; that part
-  remains unexercised live.
+- **Option C, steps 1-2 (shared RHBK path)**: the external-Keycloak Helm rendering and lint checks
+  pass, and Phase 1 was installed successfully on a shared OpenShift/RHBK cluster. It deliberately
+  creates an isolated OSAC realm and never adopts an existing Keycloak namespace, custom resource,
+  route, or realm. Do not add Helm ownership metadata to shared infrastructure as a workaround for
+  an ownership error. Phase 3 and the live MCP demo remain to be exercised.
 - **Option C, step 4 (install-osac)**: `publishTemplates.enabled: true` being the chart default (vs.
   kind's explicit `false`) is confirmed by reading `charts/osac/values.yaml`, but the actual AAP
   job-template-sync timing/behavior on a fresh real cluster is unobserved.
@@ -203,71 +198,91 @@ cluster's Route hostnames instead of the `*.svc.cluster.local` kind names, and w
 `-ca-file` at all if that cluster's ingress cert is issued by a CA your host already trusts (e.g. a
 real Let's Encrypt cert, unlike kind's self-signed one).
 
-## Option C: Existing OpenShift cluster (`PLATFORM=openshift`, no cluster-tool)
+## Option C: Existing OpenShift cluster with shared RHBK (`PLATFORM=openshift`)
 
-If you already have `oc` cluster-admin access to a real OpenShift 4.x cluster — not a fresh kind
-cluster, not booted via cluster-tool — `osac-installer` supports installing OSAC directly onto it.
-**This only works cleanly on a cluster with no pre-existing OSAC/cert-manager/Keycloak install** —
-see step 1.
+Use this path when the cluster already provides Red Hat build of Keycloak (RHBK), for example for
+its own SSO. It uses `keycloak.mode=external` to create a dedicated OSAC realm. The default
+`keycloak.mode=managed` remains the right choice for a clean, dedicated cluster; do not use the
+external settings below for that case.
 
-### 1. Preflight: confirm this is a clean cluster
+### 1. Preflight the target without changing it
 
-`osac-infra`'s chart hardcodes a fixed set of namespaces and resource names (`cert-manager`,
-`cert-manager-operator`, `openshift-storage`, and a `keycloak` namespace with a `keycloak-tls`
-Certificate, a `keycloak-database` StatefulSet, etc.) — it does not parameterize any of them.
-If objects with those exact names already exist (from any earlier manual install, a different
-Keycloak/cert-manager setup, or a workshop/demo catalog's own bootstrap), Helm will refuse to
-install with an "exists and cannot be imported" error.
-
-**Do not work around that error by labeling/annotating the pre-existing objects with Helm ownership
-metadata.** This was tried live and it breaks things: adopting a pre-existing `keycloak` namespace
-let a later `helm upgrade --install osac-infra` overwrite a pre-existing `Keycloak` custom resource
-that also happened to back that cluster's own OpenShift console SSO — taking it down, with no prior
-Helm revision to roll back to. Check first:
+Set these names to the existing RHBK namespace, `Keycloak` custom resource, Route, and a new realm
+name. `OSAC_REALM` must not name an existing realm: RHBK realm imports create realms but do not
+update them. The example values match a common workshop layout, but the discovery commands are the
+source of truth.
 
 ```bash
-oc get namespace cert-manager-operator cert-manager openshift-storage keycloak 2>&1
-oc get oauth cluster -o jsonpath='{.spec.identityProviders[*].name}{"\n"}'
+export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
+export OSAC_NAMESPACE=osac-demo
+export KEYCLOAK_NAMESPACE=keycloak
+export KEYCLOAK_NAME=keycloak
+export KEYCLOAK_ROUTE=keycloak
+export OSAC_REALM=osac-demo
+
+oc whoami
+oc whoami --show-server
+oc api-resources --api-group=k8s.keycloak.org
+oc get keycloaks.k8s.keycloak.org -n "$KEYCLOAK_NAMESPACE"
+oc get route -n "$KEYCLOAK_NAMESPACE"
+oc get certmanager.operator.openshift.io/cluster
 ```
 
-If any of those namespaces already exist, or the second command prints any identity provider
-names, **stop** — this cluster already has infra `osac-infra`'s chart doesn't expect to share, and
-proceeding risks breaking it exactly as above. Use a different, genuinely clean OpenShift cluster
-for this option instead (one where nobody — including a workshop/demo catalog's own bootstrap — has
-already installed cert-manager or Keycloak by hand).
+Confirm that the chosen `Keycloak` is Ready and select its externally reachable Route. Do not
+annotate or label the existing RHBK resources for Helm ownership, and do not reuse the cluster's
+existing SSO realm. Derive the URL after confirming the Route name:
 
-### 2. Install infra
+```bash
+export KEYCLOAK_URL="https://$(oc get route "$KEYCLOAK_ROUTE" -n "$KEYCLOAK_NAMESPACE" -o jsonpath='{.spec.host}')"
+printf 'External Keycloak: %s\nOSAC realm: %s\n' "$KEYCLOAK_URL" "$OSAC_REALM"
+```
 
-`PROFILE=vmaas-ci` bundles everything (Postgres, cert-manager, Keycloak, AAP via OLM) the same way
-kind/cluster-tool do, despite the CI-sounding name — it's the exact profile `cluster-tool`'s own
-`refresh-after-snapshot.py` uses to install OSAC onto its real OpenShift VMs, so it's expected to
-behave identically against any other clean real OpenShift cluster.
+### 2. Install infrastructure without adopting cert-manager or Keycloak
+
+`DEPS_HELM_ARGS` applies only to the operator-subscription release. `INFRA_HELM_ARGS` applies only
+to the infrastructure release. This distinction is important: the first skips the cluster-owned
+cert-manager subscription, while the second imports the OSAC realm into the existing RHBK instance.
 
 ```bash
 cd osac-installer
-oc login ...   # however you normally authenticate to this cluster
-make install-infra PLATFORM=openshift PROFILE=vmaas-ci NS=osac
+INFRA_HELM_ARGS='--set keycloak.mode=external'
+INFRA_HELM_ARGS+=' --set-string keycloak.external.namespace=$KEYCLOAK_NAMESPACE'
+INFRA_HELM_ARGS+=' --set-string keycloak.external.instanceName=$KEYCLOAK_NAME'
+INFRA_HELM_ARGS+=' --set-string keycloak.external.realmName=$OSAC_REALM'
+export INFRA_HELM_ARGS
+
+KUBECONFIG="$KUBECONFIG" \
+DEPS_HELM_ARGS='--set certManager.enabled=false' \
+make install-infra PLATFORM=openshift PROFILE=dev NS="$OSAC_NAMESPACE"
 ```
 
-Wait for it to finish and verify before moving on — don't proceed to step 3 if anything here is
-still `Pending`/`ContainerCreating`/degraded:
+Keep each `INFRA_HELM_ARGS` assignment on its own physical shell line. Do not
+insert a newline inside a quoted value: Make expands it into the Helm recipe,
+which leaves Helm with an incomplete `--set-string` flag.
+
+This creates a `KeycloakRealmImport` named `osac-<realm>-realm` and an OSAC-only client-secret
+source in the existing Keycloak namespace. It does not change the pre-existing Keycloak instance,
+Route, or realms. Verify completion without printing Secret data:
 
 ```bash
-oc get pods -n keycloak
-oc get pods -n cert-manager
-oc get keycloak -n keycloak   # status.conditions should show Ready: True
+oc get keycloakrealmimports.k8s.keycloak.org -n "$KEYCLOAK_NAMESPACE"
+oc get secret osac-keycloak-client-secrets -n "$KEYCLOAK_NAMESPACE"
+oc get pods -n osac-infra
 ```
 
-### 3. Install OSAC
+### 3. Install OSAC against the imported realm
 
-The one thing kind doesn't need that this does: a real AAP `license.zip`.
+The one thing kind does not need is a real AAP `license.zip`. Give all OSAC services the external
+realm's issuer URL in Phase 3:
 
 ```bash
-make install-osac PLATFORM=openshift PROFILE=vmaas-ci NS=osac AAP_LICENSE_FILE=/path/to/license.zip
+KUBECONFIG="$KUBECONFIG" \
+EXTRA_HELM_ARGS="--set-string service.auth.issuerUrl=$KEYCLOAK_URL/realms/$OSAC_REALM --set-string service.idp.url=$KEYCLOAK_URL --set-string service.vault.keycloakIssuerUrl=$KEYCLOAK_URL/realms/$OSAC_REALM" \
+make install-osac PLATFORM=openshift PROFILE=dev NS="$OSAC_NAMESPACE" AAP_LICENSE_FILE=/path/to/license.zip
 ```
 
-`install-osac` derives the Route hostnames itself from `oc get ingresses.config/cluster` — no
-manual `/etc/hosts` step needed, unlike kind.
+`install-osac` derives OSAC's Route hostnames from `oc get ingresses.config/cluster`; unlike kind,
+there is no `/etc/hosts` step.
 
 ### 4. Trust the cluster's CA
 
@@ -276,10 +291,15 @@ ConfigMap regardless of platform:
 
 ```bash
 mkdir -p /tmp/osac-ca
-kubectl get configmap ca-bundle -n osac -o json \
+kubectl get configmap ca-bundle -n "$OSAC_NAMESPACE" -o json \
   | python3 -c "import json,sys; [print(v) for v in json.load(sys.stdin)['data'].values()]" \
   > /tmp/osac-ca/ca-bundle.pem
 ```
+
+`--ca-file` and `-ca-file` add this bundle to the normal system trust store. If the external
+Keycloak Route is not already trusted by the host OS, obtain its public CA from the Keycloak or
+cluster administrator and append it to this PEM file before starting the local processes. Never use
+an insecure TLS bypass for the demo.
 
 ### 5. Catalog items publish automatically — no manual seeding needed
 
@@ -299,11 +319,11 @@ go build -o /tmp/fulfillment-service ./cmd/fulfillment-service
 DOMAIN=$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')
 
 /tmp/fulfillment-service start mcp-server \
-  --grpc-server-address "fulfillment-internal-api-osac.${DOMAIN}:443" \
+  --grpc-server-address "fulfillment-internal-api-${OSAC_NAMESPACE}.${DOMAIN}:443" \
   --ca-file /tmp/osac-ca/ca-bundle.pem \
   --http-listener-address localhost:8001 \
-  --grpc-authn-trusted-token-issuers "https://keycloak-keycloak.${DOMAIN}/realms/osac" \
-  --oauth-authorization-server "https://keycloak-keycloak.${DOMAIN}/realms/osac" \
+  --grpc-authn-trusted-token-issuers "$KEYCLOAK_URL/realms/$OSAC_REALM" \
+  --oauth-authorization-server "$KEYCLOAK_URL/realms/$OSAC_REALM" \
   --oauth-resource-url http://localhost:8001
 ```
 
@@ -319,14 +339,15 @@ Same as Option A step 6, pointed at the same real issuer:
 cd tools/mcp-oauth-demo-client
 GOWORK=off go run . \
   -server-url http://localhost:8001 \
-  -issuer "https://keycloak-keycloak.${DOMAIN}/realms/osac" \
+  -issuer "$KEYCLOAK_URL/realms/$OSAC_REALM" \
   -ca-file /tmp/osac-ca/ca-bundle.pem
 ```
 
-Log in as `user`/`foobar` (the same `devFixtures` fixture `vmaas-ci` shares with kind). Since AAP is
-real here, the created cluster has an actual chance of reaching `READY` — a good opportunity to
-also exercise `get_cluster_status`'s poll-until-ready path, not just kind's immediate-`PROGRESSING`
-response.
+The realm import creates, by default, an `osac-admin` login with a generated password held in the
+OSAC-only Secret above; obtain it through the normal Keycloak-administrator process and do not
+place it in shell history, tickets, or terminal recordings. Since AAP is real here, the created cluster has an
+actual chance of reaching `READY` — a good opportunity to also exercise `get_cluster_status`'s
+poll-until-ready path, not just kind's immediate-`PROGRESSING` response.
 
 ## Cleanup
 

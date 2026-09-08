@@ -1,0 +1,3 @@
+{{- if and .Values.keycloak.enabled (not (has .Values.keycloak.mode (list "managed" "external"))) }}
+{{- fail "keycloak.mode must be either managed or external" }}
+{{- end }}

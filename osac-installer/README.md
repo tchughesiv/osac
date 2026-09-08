@@ -149,7 +149,9 @@ make install-osac  PLATFORM=openshift PROFILE=<profile> NS=<namespace>   # OSAC 
 | `PLATFORM` | `kind` or `openshift` (required) |
 | `PROFILE` | `dev`, `dev-full`, `vmaas-ci`, `bmaas-ci`, `caas-ci`, or `full-ci` (required; `dev-full` is kind only) |
 | `NS` | Target namespace (required) |
-| `EXTRA_HELM_ARGS` | Extra `--set`/`--set-string` args appended to helm commands |
+| `DEPS_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac-deps` release |
+| `INFRA_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac-infra` release |
+| `EXTRA_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac` application release |
 
 #### Full local dev environment (`PROFILE=dev-full`, kind only)
 
@@ -239,6 +241,50 @@ Prerequisites (cert-manager, AAP, LVMS, MetalLB, CNV, MCE) are installed
 automatically by Phase 1. Each is gated by a values toggle (e.g.,
 `certManager.enabled: true`). See [prerequisites/README.md](prerequisites/README.md)
 for details on what each prerequisite provides.
+
+#### External Red Hat build of Keycloak
+
+The default `keycloak.mode=managed` creates an installer-owned Keycloak instance.
+On a shared OpenShift cluster with an existing Red Hat build of Keycloak (RHBK),
+use `keycloak.mode=external` instead. OSAC then creates an isolated realm through
+`KeycloakRealmImport`; it does not adopt the Keycloak namespace, instance, route,
+or an existing realm.
+
+The target namespace must expose the `k8s.keycloak.org/v2alpha1` API and contain
+a Ready `Keycloak` custom resource. The installer needs permission to create a
+`KeycloakRealmImport` and its OSAC-specific credential Secret in that namespace.
+For example, to reuse a cluster's `keycloak` namespace and `keycloak` custom
+resource while retaining its existing cert-manager operator:
+
+```bash
+INFRA_HELM_ARGS='--set keycloak.mode=external'
+INFRA_HELM_ARGS+=' --set-string keycloak.external.namespace=keycloak'
+INFRA_HELM_ARGS+=' --set-string keycloak.external.instanceName=keycloak'
+INFRA_HELM_ARGS+=' --set-string keycloak.external.realmName=osac-demo'
+export INFRA_HELM_ARGS
+
+KUBECONFIG="$HOME/.kube/config" \
+DEPS_HELM_ARGS='--set certManager.enabled=false' \
+make install-infra PLATFORM=openshift PROFILE=dev NS=osac-demo
+```
+
+Keep each `INFRA_HELM_ARGS` assignment on its own physical shell line. A newline
+inside one quoted value is expanded into the Make recipe and causes Helm to see
+an incomplete `--set-string` flag.
+
+Use the same realm in Phase 3, replacing the hostname with the existing
+Keycloak route:
+
+```bash
+KUBECONFIG="$HOME/.kube/config" \
+EXTRA_HELM_ARGS="--set-string service.auth.issuerUrl=https://sso.apps.example.com/realms/osac-demo --set-string service.idp.url=https://sso.apps.example.com --set-string service.vault.keycloakIssuerUrl=https://sso.apps.example.com/realms/osac-demo" \
+make install-osac PLATFORM=openshift PROFILE=dev NS=osac-demo AAP_LICENSE_FILE=/absolute/path/to/license.zip
+```
+
+RHBK realm imports create a realm but do not update or delete it. The external
+credential Secret is intentionally retained when `osac-infra` is uninstalled so
+the same realm can be used again. Coordinate manual realm and Secret cleanup with
+the Keycloak administrator when retiring the OSAC installation.
 
 #### AAP Configuration
 

@@ -159,9 +159,10 @@ above used to flag as open follow-on work:
    and an unauthenticated `/.well-known/oauth-protected-resource` document advertises the Keycloak
    realm as the protecting Authorization Server.
 2. **A dedicated public OAuth client (`osac-mcp-client`) is registered** in `osac-installer`'s
-   Keycloak bootstrap realm (`charts/osac-infra/files/realm.json` — the file `make install-infra`
-   actually installs for both kind and real OpenShift, not a throwaway dev-only fixture),
-   Authorization Code + PKCE only, no secret, one fixed loopback redirect URI.
+   realm definition (`charts/osac-infra/files/realm.json`). `make install-infra` applies that
+   definition to either the installer-managed Keycloak realm or, in `keycloak.mode=external`, an
+   isolated realm imported into an existing RHBK instance. It is Authorization Code + PKCE only,
+   has no secret, and uses one fixed loopback redirect URI.
 3. **A reference OAuth demo client** (`tools/mcp-oauth-demo-client/` — a standalone Go module,
    not inside `fulfillment-service`, since it has no dependency on that module's internal
    packages) drives the full handshake end to end: real browser login, then the same four-tool

@@ -26,7 +26,9 @@
 SHELL := /usr/bin/env bash -o pipefail
 .SHELLFLAGS := -ec
 
-# Extra helm --set/--set-string args appended to install commands.
+# Extra Helm --set/--set-string args for each installation phase.
+DEPS_HELM_ARGS ?=
+INFRA_HELM_ARGS ?=
 EXTRA_HELM_ARGS ?=
 
 # -- Fail-fast parameter validation ------------------------------------
@@ -115,10 +117,12 @@ KIND_KUBECONFIG := $(HOME)/.kube/$(KIND_CLUSTER_NAME)-kind-root.kubeconfig
 else
 KIND_KUBECONFIG := $(HOME)/.kube/$(KIND_CLUSTER_NAME)-kind.kubeconfig
 endif
+ifeq ($(PLATFORM),kind)
 # Use the caller's KUBECONFIG if they set a non-empty one, otherwise the kind file.
 # `?=` is not enough: a shell that exports KUBECONFIG= (empty-but-defined) would keep
 # it empty and helm/kubectl would fall back to localhost:8080. `$(or ...)` skips empty.
 export KUBECONFIG := $(or $(KUBECONFIG),$(KIND_KUBECONFIG))
+endif
 
 define kind-load-image
 	@if [ "$$(basename $(CONTAINER_TOOL))" = "podman" ]; then \
@@ -173,6 +177,7 @@ endif
 		--namespace osac-infra --create-namespace \
 		-f $(INFRA_VALUES) $(INFRA_VALUES_EXTRA) \
 		--set osacNamespace=$(NS) \
+		$(INFRA_HELM_ARGS) \
 		--wait-for-jobs --timeout 30m
 	@for f in ../osac-operator/config/crd/fakes/*.yaml; do \
 		case "$$(basename "$$f")" in \
@@ -190,6 +195,7 @@ else
 		--namespace osac-deps --create-namespace \
 		--values $(INFRA_VALUES) \
 		--set lvms.channel=stable-$(OCP_VERSION) \
+		$(DEPS_HELM_ARGS) \
 		--timeout 30m --wait
 	@bash -c 'source scripts/lib.sh && wait_for_namespace_cleanup keycloak'
 	$(eval DOMAIN := $(shell oc get ingresses.config/cluster -o jsonpath='{.spec.domain}'))
@@ -201,6 +207,7 @@ else
 		--set lvms.channel=stable-$(OCP_VERSION) \
 		--set keycloak.hostname=https://keycloak-keycloak.$(DOMAIN) \
 		--set keycloak.route.hostname=keycloak-keycloak.$(DOMAIN) \
+		$(INFRA_HELM_ARGS) \
 		--timeout 30m --wait-for-jobs
 endif
 
@@ -348,4 +355,5 @@ helm-validate: helm-lint ## Validate all charts (lint + template)
 	@echo "Validating values/dev/kind-infra.yaml..."
 	helm template osac-infra $(INFRA_CHART) --values values/dev/kind-infra.yaml
 	./scripts/validate-keycloak-credentials.sh
+	./scripts/validate-external-keycloak.sh
 	@echo "Validation passed."

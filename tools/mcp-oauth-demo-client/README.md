@@ -30,7 +30,8 @@ prerequisites below in place.
   (`--oauth-authorization-server`/`--oauth-resource-url` both set to the Keycloak realm issuer and this
   server's own externally-reachable URL, respectively).
 - The `osac-mcp-client` Keycloak client registered (already the case for any environment using
-  `osac-installer`'s bootstrap realm from this commit onward).
+  `osac-installer`'s managed bootstrap realm or its external-RHBK realm-import mode from this
+  commit onward).
 - At least one published `ClusterCatalogItem` to demo against.
 
 ## Usage

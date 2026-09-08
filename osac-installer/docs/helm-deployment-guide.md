@@ -143,6 +143,33 @@ keycloak:
 - Production clusters where browser cert warnings are unacceptable
 - Environments with corporate CA or Let's Encrypt ingress certs
 
+### External Red Hat build of Keycloak
+
+Set `keycloak.mode=external` when an existing RHBK instance provides identity
+services. The `osac-infra` chart creates a new OSAC realm using a
+`KeycloakRealmImport` in the configured provider namespace, along with a
+dedicated Secret for OSAC client credentials. It does not create or take
+ownership of the provider's namespace, Keycloak custom resource, route, or
+other realms.
+
+External mode requires `keycloak.external.namespace` and
+`keycloak.external.instanceName`. The target Keycloak instance must be Ready and
+the RHBK operator must provide `k8s.keycloak.org/v2alpha1`. The post-install hook
+waits for the realm import to reach its `Done` condition before it creates the
+credentials consumed by OSAC services.
+
+When passing the external settings through `INFRA_HELM_ARGS`, construct that
+variable with short shell assignments rather than wrapping one long quoted value.
+An embedded newline becomes part of the Make recipe and leaves Helm with an
+incomplete `--set-string` flag. The installer README has the copy-safe command.
+
+Set `service.auth.issuerUrl`, `service.idp.url`, and
+`service.vault.keycloakIssuerUrl` on the OSAC application release to the external
+route and imported realm. The RHBK operator creates realms only: later chart
+upgrades do not alter the imported realm, and uninstalling OSAC does not delete
+it. The client-secret source is retained to allow a reinstall to use the same
+realm; coordinate its eventual cleanup with the Keycloak administrator.
+
 ## Makefile Targets
 
 All targets require `PLATFORM=kind|openshift PROFILE=dev|vmaas-ci|... NS=<namespace>`.

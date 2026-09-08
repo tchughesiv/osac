@@ -1,4 +1,4 @@
-{{- if and .Values.keycloak.enabled .Values.keycloak.route.publicIngress .Values.caIssuer.enabled }}
+{{- if and .Values.keycloak.enabled (eq .Values.keycloak.mode "managed") .Values.keycloak.route.publicIngress .Values.caIssuer.enabled }}
 # This hook patches the Keycloak Route to set destinationCACertificate for reencrypt TLS mode.
 # Uses pre-upgrade (not post-upgrade) to apply the CA cert before the Route is accessed during
 # upgrade, ensuring the reencrypt termination is properly configured when Keycloak starts.

@@ -26,6 +26,9 @@ envoygateway:
 
 keycloak:
   enabled: true
+  # `managed` provisions the installer-owned Keycloak instance. `external`
+  # imports the OSAC realm into a Keycloak instance managed outside this chart.
+  mode: managed
   realmOverwrite: true
   hostname: "keycloak.keycloak.svc.cluster.local"
   adminUsername: admin
@@ -39,6 +42,17 @@ keycloak:
   # outside Kind/CI -- this chart is also used for real installs.
   devFixtures:
     enabled: false
+  external:
+    # Required when mode is external. The chart creates only an OSAC realm
+    # import and its client-secret source in this existing namespace.
+    namespace: ""
+    # Required when mode is external. Name of the existing Keycloak CR.
+    instanceName: ""
+    # The realm and KeycloakRealmImport resource name to create.
+    realmName: osac
+    # Helm-owned secret in external.namespace that carries generated OSAC
+    # client credentials and the bootstrap user's credentials.
+    clientSecretName: osac-keycloak-client-secrets
   images:
     keycloak: quay.io/keycloak/keycloak:26.6.4
     postgres: quay.io/sclorg/postgresql-18-c10s@sha256:6be2c9d855f06fb665257a6b0911676a38d740be7022cc61acee1c99a832b1b2
