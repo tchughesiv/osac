@@ -10,8 +10,11 @@ Components:
 {{- if .Values.caIssuer.enabled }}
   - CA issuer and certificates
 {{- end }}
-{{- if .Values.keycloak.enabled }}
+{{- if and .Values.keycloak.enabled (eq .Values.keycloak.mode "managed") }}
   - Keycloak identity provider
+{{- end }}
+{{- if and .Values.keycloak.enabled (eq .Values.keycloak.mode "external") }}
+  - OSAC realm imported into the external Keycloak identity provider
 {{- end }}
 {{- if .Values.lvms.enabled }}
   - LVMS configuration

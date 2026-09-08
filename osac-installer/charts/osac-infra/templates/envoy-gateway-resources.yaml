@@ -1,4 +1,4 @@
-{{- if or .Values.envoygateway.enabled .Values.envoygateway.resources }}
+{{- if and (or .Values.envoygateway.enabled .Values.envoygateway.resources) .Values.keycloak.enabled (eq .Values.keycloak.mode "managed") }}
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
 metadata:

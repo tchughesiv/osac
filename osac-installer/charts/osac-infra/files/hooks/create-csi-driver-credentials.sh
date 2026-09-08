@@ -3,7 +3,7 @@ set -euo pipefail
 
 KEYCLOAK_NAMESPACE="${KEYCLOAK_NAMESPACE:-keycloak}"
 OSAC_NAMESPACE="${OSAC_NAMESPACE:?OSAC_NAMESPACE is required}"
-SECRET_NAME="keycloak-client-secrets"
+SECRET_NAME="${KEYCLOAK_CLIENT_SECRET_NAME:-keycloak-client-secrets}"
 CRED_SECRET_NAME="osac-csi-driver-credentials"
 
 TMPDIR_CREDS="$(mktemp -d)"

@@ -37,4 +37,29 @@ metadata:
 spec:
   ca:
     secretName: default-ca
+---
+apiVersion: trust.cert-manager.io/v1alpha1
+kind: Bundle
+metadata:
+  name: ca-bundle
+  labels:
+    {{- include "osac-infra.labels" . | nindent 4 }}
+spec:
+  sources:
+  - secret:
+      name: "default-ca"
+      key: "ca.crt"
+  {{- if or .Values.keycloak.route.publicIngress (and .Values.keycloak.enabled (eq .Values.keycloak.mode "external")) }}
+  - useDefaultCAs: true
+  {{- end }}
+  target:
+    configMap:
+      key: bundle.pem
+    namespaceSelector:
+      matchExpressions:
+      - key: kubernetes.io/metadata.name
+        operator: In
+        values:
+        - {{ .Release.Namespace }}
+        - {{ .Values.osacNamespace }}
 {{- end }}

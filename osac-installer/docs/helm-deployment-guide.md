@@ -150,6 +150,39 @@ keycloak:
 - Production clusters where browser cert warnings are unacceptable
 - Environments with corporate CA or Let's Encrypt ingress certs
 
+### External Red Hat build of Keycloak
+
+Set `keycloak.mode=external` when an existing RHBK instance provides identity
+services. The `osac-infra` chart creates a new OSAC realm using a
+`KeycloakRealmImport` in the configured provider namespace, along with a
+dedicated Secret for OSAC client credentials. It does not create or take
+ownership of the provider's namespace, Keycloak custom resource, route, or
+other realms.
+
+External mode requires `keycloak.external.namespace` and
+`keycloak.external.instanceName`. The target Keycloak instance must be Ready and
+the RHBK operator must provide `k8s.keycloak.org/v2alpha1`. The post-install hook
+waits for the realm import to reach its `Done` condition before it creates the
+credentials consumed by OSAC services.
+
+When passing the external settings through `INFRA_HELM_ARGS`, construct that
+variable with short shell assignments rather than wrapping one long quoted value.
+An embedded newline becomes part of the Make recipe and leaves Helm with an
+incomplete `--set-string` flag. The installer README has the copy-safe command.
+
+For a short-lived external-RHBK demo, use
+`values/dev/external-rhbk-demo-infra.yaml` as `INFRA_VALUES` in both installation
+phases. It enables only ephemeral bundled PostgreSQL on top of the `dev` profile;
+it does not enable the additional operators in the CI profiles. Durable installs
+instead require external PostgreSQL connection and client-certificate Secrets.
+
+Set `service.auth.issuerUrl`, `service.idp.url`, and
+`service.vault.keycloakIssuerUrl` on the OSAC application release to the external
+route and imported realm. The RHBK operator creates realms only: later chart
+upgrades do not alter the imported realm, and uninstalling OSAC does not delete
+it. The client-secret source is retained to allow a reinstall to use the same
+realm; coordinate its eventual cleanup with the Keycloak administrator.
+
 ## Makefile Targets
 
 All targets require `PLATFORM=kind|openshift PROFILE=dev|vmaas-ci|... NS=<namespace>`.
@@ -159,9 +192,66 @@ All targets require `PLATFORM=kind|openshift PROFILE=dev|vmaas-ci|... NS=<namesp
 | `make install` | Full install (infra + osac) |
 | `make install-infra` | Infrastructure only (osac-deps + osac-infra) |
 | `make install-osac` | OSAC instance only |
+| `make build-mcp-demo-image` | Build, verify, and push the MCP image |
+| `make install-mcp-demo` | Install the OpenShift VMaaS MCP demo |
+| `make seed-mcp-demo-catalog` | Seed the VMaaS catalog and tenant network |
 | `make uninstall` | Full uninstall (reverse order) |
 | `make test` | Run integration tests (SUITE= required) |
 | `make helm-lint` | Lint all charts |
+
+### Deployment MCP VMaaS PoC on OpenShift
+
+`install-mcp-demo` is intentionally limited to
+`PLATFORM=openshift PROFILE=vmaas-ci`. It requires a dedicated cluster, an AAP
+license, and a registry image the cluster can pull:
+
+```bash
+export REGISTRY_USER=your-registry-user
+export MCP_DEMO_IMAGE="quay.io/${REGISTRY_USER}/fulfillment-service:osac-4388"
+export MCP_DEMO_PLATFORM=linux/amd64
+podman login quay.io
+make install-mcp-demo PLATFORM=openshift PROFILE=vmaas-ci NS=osac \
+  AAP_LICENSE_FILE=/absolute/path/to/license.zip \
+  MCP_DEMO_IMAGE="$MCP_DEMO_IMAGE" \
+  MCP_DEMO_PLATFORM="$MCP_DEMO_PLATFORM"
+```
+
+The target builds and pushes the checkout's fulfillment-service image, then
+deploys it with `imagePullPolicy: Always`. Reusing the tag is supported during
+iteration because the deployment pulls on rollout. It also validates OpenShift
+Virtualization/KubeVirt, CDI, hub access, an AAP-published `ocp-virt-vm`
+template, a block StorageTier, and the demo tenant's ready default
+VirtualNetwork, Subnet, and SecurityGroup. It creates or reuses a Fedora
+DiskImage, small InstanceType, and published ComputeInstance catalog item.
+
+The image target defaults to `linux/amd64`; override
+`MCP_DEMO_PLATFORM=linux/arm64` for an ARM64 OpenShift cluster. To build, verify,
+and push without installing OSAC, run:
+
+```bash
+make build-mcp-demo-image \
+  MCP_DEMO_IMAGE="$MCP_DEMO_IMAGE" \
+  MCP_DEMO_PLATFORM="$MCP_DEMO_PLATFORM"
+```
+
+The target does not mutate incompatible catalog data and it does not create
+tenant network prerequisites. Recreate the demo environment rather than attempt
+a migration, and choose a prepared tenant with `MCP_DEMO_TENANT` when the
+default `osac-e2e-ci` tenant is unsuitable. It deploys managed Keycloak and
+cluster prerequisites, so do not use it to adopt shared infrastructure.
+
+Discover the route dynamically:
+
+```bash
+DOMAIN="$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')"
+MCP_URL="https://mcp-osac.${DOMAIN}"
+```
+
+The endpoint offers allowlisted reads of ComputeInstance catalog items and
+ComputeInstances, plus create and delete operations for ComputeInstances. It
+does not deploy an application into a VM. The complete browser-OAuth and
+Inspector walkthrough is in
+[`../../tools/mcp-oauth-demo-client/RUNBOOK.md`](../../tools/mcp-oauth-demo-client/RUNBOOK.md).
 
 ## Uninstall
 

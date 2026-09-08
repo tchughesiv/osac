@@ -274,6 +274,11 @@ auth:
   issuerUrl: https://keycloak.keycloak.svc.cluster.local:8000/realms/osac
 ```
 
+The controller derives the Keycloak administration realm from the final
+`/realms/<realm-name>` portion of this issuer. Its `idp.url` remains the
+Keycloak base URL, without the realm path. This keeps organization and tenant
+management in the same realm that issues OSAC tokens.
+
 ### 3. Update the Server Configuration
 
 The fulfillment service server component also needs to be configured with the trusted token issuer.

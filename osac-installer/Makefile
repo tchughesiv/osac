@@ -11,6 +11,9 @@
 #   make install-osac    PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
 #   make uninstall-osac  PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
 #   make uninstall-infra PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
+#   make install-mcp-demo PLATFORM=openshift PROFILE=vmaas-ci NS=osac MCP_DEMO_IMAGE=<registry>/<repository>:<tag>
+#   make build-mcp-demo-image MCP_DEMO_IMAGE=<registry>/<repository>:<tag> MCP_DEMO_PLATFORM=linux/amd64
+#   make seed-mcp-demo-catalog PLATFORM=openshift PROFILE=vmaas-ci NS=osac
 #   make test            PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac  SUITE=all|fulfillment|operator|bmf
 #
 # PROFILE=dev-full (kind only) is a superset of dev: it runs the same chart-based
@@ -26,18 +29,27 @@
 SHELL := /usr/bin/env bash -o pipefail
 .SHELLFLAGS := -ec
 
-# Extra helm --set/--set-string args appended to install commands.
+# Extra Helm --set/--set-string args for each installation phase.
+DEPS_HELM_ARGS ?=
+INFRA_HELM_ARGS ?=
 EXTRA_HELM_ARGS ?=
 FULFILLMENT_GINKGO_ARGS ?=
 
 # -- Fail-fast parameter validation ------------------------------------
 # Guards fire at parse time, gated by MAKECMDGOALS so `make help` works.
 
-ALL_TARGETS := install uninstall install-infra uninstall-infra install-osac uninstall-osac install-devstack test
+ALL_TARGETS := install uninstall install-infra uninstall-infra install-osac uninstall-osac install-devstack install-mcp-demo seed-mcp-demo-catalog test
 
 ifneq ($(filter $(ALL_TARGETS),$(MAKECMDGOALS)),)
 ifndef PLATFORM
 $(error PLATFORM is required (kind|openshift))
+endif
+
+MCP_DEMO_TARGETS := install-mcp-demo seed-mcp-demo-catalog
+ifneq ($(filter $(MCP_DEMO_TARGETS),$(MAKECMDGOALS)),)
+ifneq ($(PLATFORM)/$(PROFILE),openshift/vmaas-ci)
+$(error $(MCP_DEMO_TARGETS) require PLATFORM=openshift PROFILE=vmaas-ci)
+endif
 endif
 ifeq ($(filter $(PLATFORM),kind openshift),)
 $(error PLATFORM=$(PLATFORM) is invalid; must be kind or openshift)
@@ -81,14 +93,14 @@ OSAC_CHART     := $(CHARTS)/osac
 INSTANCE_VALUES_EXTRA :=
 INFRA_VALUES_EXTRA :=
 ifeq ($(PLATFORM),kind)
-INFRA_VALUES    := values/dev/kind-infra.yaml
+INFRA_VALUES    ?= values/dev/kind-infra.yaml
 INSTANCE_VALUES := values/dev/kind-instance.yaml
 ifeq ($(PROFILE),dev-full)
 INSTANCE_VALUES_EXTRA := -f values/dev/kind-instance-devfull.yaml
 INFRA_VALUES_EXTRA := -f values/dev/kind-infra-devfull.yaml
 endif
 else ifdef PROFILE
-INFRA_VALUES    := values/$(PROFILE)/infra.yaml
+INFRA_VALUES    ?= values/$(PROFILE)/infra.yaml
 INSTANCE_VALUES := values/$(PROFILE)/instance.yaml
 endif
 
@@ -98,10 +110,18 @@ endif
 # provider selection aligned.
 KIND_RUNTIME := scripts/dev-full/kind-runtime.sh
 KIND_ARM64_CLI_IMAGE := quay.io/openshift/origin-cli:4.20.0
+# The OpenShift MCP demo deliberately requires the caller to supply a pullable
+# registry image. Its cluster cannot pull a developer's local Podman image.
+MCP_DEMO_IMAGE ?=
+MCP_DEMO_PLATFORM ?= linux/amd64
+MCP_DEMO_TENANT ?= osac-e2e-ci
+MCP_DEMO_STORAGE_TIER ?= local
+export MCP_DEMO_IMAGE MCP_DEMO_PLATFORM MCP_DEMO_TENANT MCP_DEMO_STORAGE_TIER
 
 # quay.io/openshift/origin-cli:4.20.0 has no arm64 manifest. On Apple Silicon,
 # build a compatible local image with the same tag so every chart can continue
 # using the shared cliImage value without platform-specific values files.
+HOST_IS_MAC := $(shell if [ "$$(uname -s)" = "Darwin" ]; then echo true; fi)
 HOST_IS_MAC_ARM := $(shell if [ "$$(uname -s)" = "Darwin" ] && { [ "$$(uname -m)" = "arm64" ] || [ "$$(sysctl -in hw.optional.arm64 2>/dev/null)" = "1" ]; }; then echo true; fi)
 KIND_ARM64_CLI_IMAGE_SCRIPT := scripts/dev-full/build-arm64-cli-image.sh
 
@@ -117,10 +137,12 @@ KIND_KUBECONFIG := $(HOME)/.kube/$(KIND_CLUSTER_NAME)-kind-root.kubeconfig
 else
 KIND_KUBECONFIG := $(HOME)/.kube/$(KIND_CLUSTER_NAME)-kind.kubeconfig
 endif
+ifeq ($(PLATFORM),kind)
 # Use the caller's KUBECONFIG if they set a non-empty one, otherwise the kind file.
 # `?=` is not enough: a shell that exports KUBECONFIG= (empty-but-defined) would keep
 # it empty and helm/kubectl would fall back to localhost:8080. `$(or ...)` skips empty.
 export KUBECONFIG := $(or $(KUBECONFIG),$(KIND_KUBECONFIG))
+endif
 
 define kind-load-image
 	@if [ "$$(basename $(CONTAINER_TOOL))" = "podman" ]; then \
@@ -130,6 +152,28 @@ define kind-load-image
 		rm -f "$$tmpfile"; \
 	else \
 		$(KIND_RUNTIME) load docker-image $(1) --name $(KIND_CLUSTER_NAME); \
+	fi
+endef
+
+# Podman on macOS runs inside a VM. Stream exactly the files copied by the
+# fulfillment-service Containerfile into that VM so buildah sees a Linux build
+# context rather than a host path. This is shared by the MCP image push and the
+# Kind integration-test image load paths.
+define build-fulfillment-service-image
+	@if [ "$(HOST_IS_MAC)" = "true" ] && [ "$$(basename $(CONTAINER_TOOL))" = "podman" ]; then \
+		tar -C .. -cf - \
+			go.work \
+			proto \
+			fulfillment-service \
+			bare-metal-fulfillment-operator \
+			osac-operator/go.mod osac-operator/go.sum osac-operator/api \
+			osac-csi-driver/go.mod osac-csi-driver/go.sum \
+			osac-metering/schema/go.mod osac-metering/schema/go.sum \
+			osac-metering/metering-service/go.mod osac-metering/metering-service/go.sum \
+			osac-metering/adapters/go.mod osac-metering/adapters/go.sum | \
+		$(CONTAINER_TOOL) machine ssh -- podman build $(if $(strip $(2)),--platform="$(2)") -t $(1) -f fulfillment-service/Containerfile -; \
+	else \
+		$(CONTAINER_TOOL) build $(if $(strip $(2)),--platform="$(2)") -t $(1) -f ../fulfillment-service/Containerfile ..; \
 	fi
 endef
 
@@ -178,6 +222,7 @@ endif
 		--namespace osac-infra --create-namespace \
 		-f $(INFRA_VALUES) $(INFRA_VALUES_EXTRA) \
 		--set osacNamespace=$(NS) \
+		$(INFRA_HELM_ARGS) \
 		--wait-for-jobs --timeout 30m \
 	|| { echo "=== osac-infra hook jobs ==="; kubectl get jobs,pods,cm -n osac-infra || true; kubectl logs -n osac-infra -l job-name=osac-infra-apply-ca-bundle --tail=200 || true; kubectl get deploy,endpoints,certificate -n cert-manager || true; exit 1; }
 	@for f in ../osac-operator/config/crd/fakes/*.yaml; do \
@@ -196,6 +241,7 @@ else
 		--namespace osac-deps --create-namespace \
 		--values $(INFRA_VALUES) \
 		--set lvms.channel=stable-$(OCP_VERSION) \
+		$(DEPS_HELM_ARGS) \
 		--timeout 30m --wait
 	@bash -c 'source scripts/lib.sh && wait_for_namespace_cleanup keycloak'
 	$(eval DOMAIN := $(shell oc get ingresses.config/cluster -o jsonpath='{.spec.domain}'))
@@ -208,6 +254,7 @@ else
 		--set keycloak.hostname=https://keycloak-keycloak.$(DOMAIN) \
 		--set keycloak.route.hostname=keycloak-keycloak.$(DOMAIN) \
 		--set "bundledVault.keycloakIssuerUrl=https://keycloak-keycloak.$(DOMAIN)/realms/osac" \
+		$(INFRA_HELM_ARGS) \
 		--timeout 30m --wait-for-jobs \
 	|| { echo "=== osac-infra hook jobs ==="; oc get jobs,pods,cm -n osac-infra || true; oc logs -n osac-infra -l job-name=osac-infra-apply-ca-bundle --tail=200 || true; oc get deploy,endpoints,certificate -n cert-manager || true; exit 1; }
 endif
@@ -290,6 +337,33 @@ else
 install: install-infra install-osac ## Full install: infra + osac (PLATFORM= PROFILE= required)
 endif
 
+.PHONY: build-mcp-demo-image
+build-mcp-demo-image: ## Build, verify, and push the MCP demo image (MCP_DEMO_IMAGE= required)
+	@./scripts/validate-mcp-demo-image.sh "$${MCP_DEMO_IMAGE}" "$${MCP_DEMO_PLATFORM}"
+	$(call build-fulfillment-service-image,$${MCP_DEMO_IMAGE},$${MCP_DEMO_PLATFORM})
+	@actual_platform="$$( $(CONTAINER_TOOL) image inspect --format '{{.Os}}/{{.Architecture}}' "$${MCP_DEMO_IMAGE}")"; \
+		[ "$$actual_platform" = "$${MCP_DEMO_PLATFORM}" ] || { \
+			echo "ERROR: built MCP demo image platform $$actual_platform does not match $${MCP_DEMO_PLATFORM}" >&2; \
+			exit 1; \
+		}
+	$(CONTAINER_TOOL) push "$${MCP_DEMO_IMAGE}"
+
+.PHONY: install-mcp-demo
+install-mcp-demo: ## Install OpenShift VMaaS OSAC, push and deploy its MCP server, then seed the VM catalog
+	@./scripts/validate-mcp-demo-image.sh "$${MCP_DEMO_IMAGE}" "$${MCP_DEMO_PLATFORM}"
+	$(MAKE) install-infra PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
+		DEPS_HELM_ARGS="" INFRA_HELM_ARGS=""
+	$(MAKE) build-mcp-demo-image MCP_DEMO_IMAGE="$${MCP_DEMO_IMAGE}" MCP_DEMO_PLATFORM="$${MCP_DEMO_PLATFORM}"
+	@domain="$$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')"; \
+		[ -n "$$domain" ] || { echo "ERROR: could not determine cluster domain" >&2; exit 1; }; \
+		$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
+			EXTRA_HELM_ARGS="--set service.mcp.enabled=true --set-string service.mcp.externalHostname=mcp-$(NS).$$domain --set service.images.service=$${MCP_DEMO_IMAGE} --set service.images.pullPolicy=Always"
+	$(MAKE) seed-mcp-demo-catalog PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS)
+
+.PHONY: seed-mcp-demo-catalog
+seed-mcp-demo-catalog: ## Seed and validate the OpenShift VMaaS catalog and tenant prerequisites for the MCP PoC
+	./scripts/seed-mcp-demo-catalog.sh $(NS)
+
 .PHONY: uninstall
 uninstall: uninstall-osac uninstall-infra ## Full uninstall: osac + infra (PLATFORM= PROFILE= required)
 
@@ -303,7 +377,7 @@ ifeq ($(SUITE),all)
 	$(MAKE) test SUITE=bmf
 endif
 ifeq ($(SUITE),fulfillment)
-	$(CONTAINER_TOOL) build -t localhost/fulfillment-service:it -f ../fulfillment-service/Containerfile ..
+	$(call build-fulfillment-service-image,localhost/fulfillment-service:it)
 	$(call kind-load-image,localhost/fulfillment-service:it)
 	$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
 		EXTRA_HELM_ARGS="--set service.images.service=localhost/fulfillment-service:it --set operator.enabled=false --set networkClass.enabled=false"
@@ -361,5 +435,9 @@ helm-validate: helm-lint ## Validate all charts (lint + template)
 	done
 	@echo "Validating values/dev/kind-infra.yaml..."
 	helm template osac-infra $(INFRA_CHART) --values values/dev/kind-infra.yaml
+	./scripts/validate-postgres-prerequisites.sh
 	./scripts/validate-keycloak-credentials.sh
+	./scripts/validate-external-keycloak.sh
+	./scripts/validate-cnv-hook.sh
+	./scripts/validate-mcp-demo-catalog.sh
 	@echo "Validation passed."

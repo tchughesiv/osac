@@ -1,0 +1,67 @@
+{{- if and .Values.keycloak.enabled (eq .Values.keycloak.mode "external") }}
+{{- $namespace := include "osac-infra.keycloakNamespace" . }}
+{{- $instanceName := required "keycloak.external.instanceName is required when keycloak.mode=external" .Values.keycloak.external.instanceName }}
+{{- $realmName := required "keycloak.external.realmName is required when keycloak.mode=external" .Values.keycloak.external.realmName }}
+{{- $secretName := include "osac-infra.keycloakClientSecretName" . }}
+{{- $existingSecret := lookup "v1" "Secret" $namespace $secretName }}
+{{- $secretData := default (dict) $existingSecret.data }}
+{{- $controllerSecret := default (randAlphaNum 32) (b64dec (default "" (get $secretData "osac-controller"))) }}
+{{- $adminSecret := default (randAlphaNum 32) (b64dec (default "" (get $secretData "osac-admin"))) }}
+{{- $csiSecret := default (randAlphaNum 32) (b64dec (default "" (get $secretData "osac-csi-driver"))) }}
+{{- $adminUsername := default "osac-admin" (b64dec (default "" (get $secretData "realm-admin-username"))) }}
+{{- $adminPassword := default (randAlphaNum 32) (b64dec (default "" (get $secretData "realm-admin-password"))) }}
+{{- $realm := .Files.Get "files/realm.json" | replace "__OSAC_CONTROLLER_CLIENT_SECRET__" "${OSAC_CONTROLLER_CLIENT_SECRET}" | replace "__OSAC_ADMIN_CLIENT_SECRET__" "${OSAC_ADMIN_CLIENT_SECRET}" | replace "__OSAC_CSI_DRIVER_CLIENT_SECRET__" "${OSAC_CSI_DRIVER_CLIENT_SECRET}" | replace "__OSAC_REALM_ADMIN_USERNAME__" "${OSAC_REALM_ADMIN_USERNAME}" | replace "__OSAC_REALM_ADMIN_PASSWORD__" "${OSAC_REALM_ADMIN_PASSWORD}" | fromJson }}
+{{- if not $realm }}
+{{- fail "could not parse files/realm.json" }}
+{{- end }}
+{{- $_ := set $realm "realm" $realmName }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "osac-infra.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/resource-policy": keep
+type: Opaque
+stringData:
+  osac-controller: {{ $controllerSecret | quote }}
+  osac-admin: {{ $adminSecret | quote }}
+  osac-csi-driver: {{ $csiSecret | quote }}
+  realm-admin-username: {{ $adminUsername | quote }}
+  realm-admin-password: {{ $adminPassword | quote }}
+---
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: KeycloakRealmImport
+metadata:
+  name: {{ printf "osac-%s-realm" $realmName | trunc 63 | trimSuffix "-" }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "osac-infra.labels" . | nindent 4 }}
+spec:
+  keycloakCRName: {{ $instanceName }}
+  placeholders:
+    OSAC_CONTROLLER_CLIENT_SECRET:
+      secret:
+        name: {{ $secretName }}
+        key: osac-controller
+    OSAC_ADMIN_CLIENT_SECRET:
+      secret:
+        name: {{ $secretName }}
+        key: osac-admin
+    OSAC_CSI_DRIVER_CLIENT_SECRET:
+      secret:
+        name: {{ $secretName }}
+        key: osac-csi-driver
+    OSAC_REALM_ADMIN_USERNAME:
+      secret:
+        name: {{ $secretName }}
+        key: realm-admin-username
+    OSAC_REALM_ADMIN_PASSWORD:
+      secret:
+        name: {{ $secretName }}
+        key: realm-admin-password
+  realm:
+{{ $realm | toYaml | nindent 4 }}
+{{- end }}
