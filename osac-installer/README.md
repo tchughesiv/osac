@@ -149,7 +149,9 @@ make install-osac  PLATFORM=openshift PROFILE=<profile> NS=<namespace>   # OSAC 
 | `PLATFORM` | `kind` or `openshift` (required) |
 | `PROFILE` | `dev`, `dev-full`, `vmaas-ci`, `bmaas-ci`, `caas-ci`, or `full-ci` (required; `dev-full` is kind only) |
 | `NS` | Target namespace (required) |
-| `EXTRA_HELM_ARGS` | Extra `--set`/`--set-string` args appended to helm commands |
+| `DEPS_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac-deps` release |
+| `INFRA_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac-infra` release |
+| `EXTRA_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac` application release |
 
 #### Full local dev environment (`PROFILE=dev-full`, kind only)
 
@@ -240,6 +242,110 @@ Prerequisites (cert-manager, AAP, LVMS, MetalLB, CNV, MCE) are installed
 automatically by Phase 1. Each is gated by a values toggle (e.g.,
 `certManager.enabled: true`). See [prerequisites/README.md](prerequisites/README.md)
 for details on what each prerequisite provides.
+
+#### External Red Hat build of Keycloak
+
+The default `keycloak.mode=managed` creates an installer-owned Keycloak instance.
+On a shared OpenShift cluster with an existing Red Hat build of Keycloak (RHBK),
+use `keycloak.mode=external` instead. OSAC then creates an isolated realm through
+`KeycloakRealmImport`; it does not adopt the Keycloak namespace, instance, route,
+or an existing realm.
+
+The target namespace must expose the `k8s.keycloak.org/v2alpha1` API and contain
+a Ready `Keycloak` custom resource. The installer needs permission to create a
+`KeycloakRealmImport` and its OSAC-specific credential Secret in that namespace.
+For example, to reuse a cluster's `keycloak` namespace and `keycloak` custom
+resource while retaining its existing cert-manager operator:
+
+```bash
+INFRA_HELM_ARGS='--set keycloak.mode=external'
+INFRA_HELM_ARGS+=' --set-string keycloak.external.namespace=keycloak'
+INFRA_HELM_ARGS+=' --set-string keycloak.external.instanceName=keycloak'
+INFRA_HELM_ARGS+=' --set-string keycloak.external.realmName=osac-demo'
+export INFRA_HELM_ARGS
+
+KUBECONFIG="$HOME/.kube/config" \
+DEPS_HELM_ARGS='--set certManager.enabled=false' \
+make INFRA_VALUES=values/dev/external-rhbk-demo-infra.yaml \
+  install-infra PLATFORM=openshift PROFILE=dev NS=osac-demo
+```
+
+Keep each `INFRA_HELM_ARGS` assignment on its own physical shell line. A newline
+inside one quoted value is expanded into the Make recipe and causes Helm to see
+an incomplete `--set-string` flag.
+
+`external-rhbk-demo-infra.yaml` enables an ephemeral, installer-owned PostgreSQL
+instance for a short-lived demo. It also installs OpenShift Virtualization and
+MultiCluster Engine because the default VMaaS and CaaS controllers require the
+KubeVirt and HyperShift APIs. Those are cluster-scoped operators, so use this
+profile only with cluster-administrator approval. It must be passed to both
+Phase 1 and Phase 3. For a durable installation, use an externally managed
+PostgreSQL deployment and provide its `osac-db-config` and
+`osac-db-client-cert` Secrets instead.
+
+OLM installs those APIs asynchronously. Before Phase 3, wait for them to be
+established:
+
+```bash
+for crd in virtualmachines.kubevirt.io hostedclusters.hypershift.openshift.io; do
+  KUBECONFIG="$HOME/.kube/config" oc wait --for=create "crd/$crd" --timeout=15m
+  KUBECONFIG="$HOME/.kube/config" oc wait --for=condition=Established "crd/$crd" --timeout=15m
+done
+```
+
+Phase 1 configures the `HyperConverged` resource once. Subsequent Phase 1
+upgrades detect an already Available resource and do not reapply that mutable
+CNV setup.
+
+Use the existing Keycloak Route as the discovery endpoint, then derive the
+issuer from its OpenID discovery document. This fails before Helm runs if the
+Route, realm, or issuer is unavailable. It requires `curl` and `jq`.
+
+```bash
+KEYCLOAK_ROUTE_HOST="$(KUBECONFIG="$HOME/.kube/config" oc get route keycloak -n keycloak -o jsonpath='{.spec.host}')"
+[ -n "$KEYCLOAK_ROUTE_HOST" ] || { echo 'ERROR: external Keycloak Route has no host'; exit 1; }
+KEYCLOAK_ROUTE_URL="https://${KEYCLOAK_ROUTE_HOST}"
+KEYCLOAK_ISSUER="$(curl --fail --silent --show-error "$KEYCLOAK_ROUTE_URL/realms/osac-demo/.well-known/openid-configuration" | jq --exit-status --raw-output '.issuer')"
+case "$KEYCLOAK_ISSUER" in
+  */realms/osac-demo) ;;
+  *) echo "ERROR: discovery returned an invalid issuer: $KEYCLOAK_ISSUER"; exit 1 ;;
+esac
+KEYCLOAK_URL="${KEYCLOAK_ISSUER%/realms/osac-demo}"
+
+EXTRA_HELM_ARGS="--set-string service.auth.issuerUrl=$KEYCLOAK_ISSUER"
+EXTRA_HELM_ARGS+=" --set-string service.idp.url=$KEYCLOAK_URL"
+EXTRA_HELM_ARGS+=" --set-string service.vault.keycloakIssuerUrl=$KEYCLOAK_ISSUER"
+export EXTRA_HELM_ARGS
+
+KUBECONFIG="$HOME/.kube/config" \
+make INFRA_VALUES=values/dev/external-rhbk-demo-infra.yaml \
+  install-osac PLATFORM=openshift PROFILE=dev NS=osac-demo AAP_LICENSE_FILE=/absolute/path/to/license.zip
+```
+
+The controller derives its Keycloak administration realm from
+`service.auth.issuerUrl`, so the discovery-derived issuer must retain the
+`/realms/osac-demo` suffix. `service.idp.url` is intentionally the Keycloak
+base URL, without that suffix.
+
+RHBK realm imports create a realm but do not update or delete it. The external
+credential Secret is intentionally retained when `osac-infra` is uninstalled so
+the same realm can be used again. Coordinate manual realm and Secret cleanup with
+the Keycloak administrator when retiring the OSAC installation.
+
+External mode automatically adds standard system CA roots to OSAC's shared
+`ca-bundle`, so controllers can verify a publicly trusted RHBK Route. Do not use
+an insecure TLS bypass. If the Route is signed by a private CA, have the Keycloak
+or cluster administrator make that CA available to the OSAC trust bundle before
+running Phase 3.
+
+Wait for `trust-manager` to publish that bundle before starting Phase 3:
+
+```bash
+KUBECONFIG="$HOME/.kube/config" \
+  oc wait --for=condition=Synced bundles.trust.cert-manager.io/ca-bundle --timeout=5m
+KUBECONFIG="$HOME/.kube/config" \
+  oc get configmap ca-bundle -n osac-demo
+```
 
 #### AAP Configuration
 

@@ -28,3 +28,19 @@ app.kubernetes.io/name: {{ include "osac-infra.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
+
+{{- define "osac-infra.keycloakNamespace" -}}
+{{- if eq .Values.keycloak.mode "external" -}}
+{{- required "keycloak.external.namespace is required when keycloak.mode=external" .Values.keycloak.external.namespace -}}
+{{- else -}}
+keycloak
+{{- end -}}
+{{- end }}
+
+{{- define "osac-infra.keycloakClientSecretName" -}}
+{{- if eq .Values.keycloak.mode "external" -}}
+{{- required "keycloak.external.clientSecretName is required when keycloak.mode=external" .Values.keycloak.external.clientSecretName -}}
+{{- else -}}
+keycloak-client-secrets
+{{- end -}}
+{{- end }}

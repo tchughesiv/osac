@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1328,6 +1329,10 @@ func (r *runnerContext) createIDPClient(ctx context.Context, caPool *x509.CertPo
 			)
 		}
 	}
+	realmName, err := keycloakRealmName(issuerUrl)
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine Keycloak realm from issuer URL: %w", err)
+	}
 
 	r.logger.DebugContext(
 		ctx,
@@ -1367,6 +1372,7 @@ func (r *runnerContext) createIDPClient(ctx context.Context, caPool *x509.CertPo
 		SetLogger(r.logger).
 		SetBaseURL(r.args.idpURL).
 		SetTokenSource(idpTokenSource).
+		SetRealmName(realmName).
 		SetCaPool(caPool).
 		Build()
 	if err != nil {
@@ -1375,6 +1381,20 @@ func (r *runnerContext) createIDPClient(ctx context.Context, caPool *x509.CertPo
 
 	r.logger.InfoContext(ctx, "Keycloak IDP client created successfully")
 	return idpClient, nil
+}
+
+// keycloakRealmName extracts the Keycloak realm from an issuer URL.
+func keycloakRealmName(issuerURL string) (string, error) {
+	issuer, err := url.Parse(issuerURL)
+	if err != nil || issuer.Scheme == "" || issuer.Host == "" {
+		return "", fmt.Errorf("invalid issuer URL %q", issuerURL)
+	}
+
+	parts := strings.Split(strings.Trim(issuer.Path, "/"), "/")
+	if len(parts) < 2 || parts[len(parts)-2] != "realms" || parts[len(parts)-1] == "" {
+		return "", fmt.Errorf("issuer URL %q must end with /realms/<realm>", issuerURL)
+	}
+	return parts[len(parts)-1], nil
 }
 
 // readTrimmedFile reads the content of the given file and returns it with all leading and trailing whitespace removed.

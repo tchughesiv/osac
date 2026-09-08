@@ -95,7 +95,8 @@ type TokenSource struct {
 	caPool           *x509.CertPool
 	interactive      bool
 	timeout          time.Duration
-	discoverOnce     sync.Once
+	discoveryMutex   sync.Mutex
+	discovered       bool
 	tokenEndpoint    string
 	authEndpoint     string
 	deviceEndpoint   string
@@ -654,6 +655,24 @@ func (s *TokenSource) discover(ctx context.Context) error {
 	return nil
 }
 
+// ensureDiscovered resolves the OAuth endpoints once they are available. A
+// failed discovery is not retained because it may be caused by a transient
+// network or trust configuration problem that is corrected while the process
+// remains running.
+func (s *TokenSource) ensureDiscovered(ctx context.Context) error {
+	s.discoveryMutex.Lock()
+	defer s.discoveryMutex.Unlock()
+
+	if s.discovered {
+		return nil
+	}
+	if err := s.discover(ctx); err != nil {
+		return fmt.Errorf("failed to discover metadata: %w", err)
+	}
+	s.discovered = true
+	return nil
+}
+
 // isFresh checks if the given token can still be used. Note that if the token expires soon it will not be considered
 // fresh, even if it is still valid. This is to avoid using a token that is about to expire, and may expire in the
 // middle of the operation that it is used for.
@@ -672,11 +691,7 @@ func (s *TokenSource) isExpired(token *auth.Token) bool {
 
 func (s *TokenSource) runRefresh(ctx context.Context, refreshToken string) (result *auth.Token, err error) {
 	// Perform discovery if not already done:
-	s.discoverOnce.Do(func() {
-		err = s.discover(ctx)
-	})
-	if err != nil {
-		err = fmt.Errorf("failed to discover metadata: %w", err)
+	if err = s.ensureDiscovered(ctx); err != nil {
 		return
 	}
 
@@ -714,11 +729,7 @@ func (s *TokenSource) runRefresh(ctx context.Context, refreshToken string) (resu
 
 func (s *TokenSource) runFlow(ctx context.Context) (result *auth.Token, err error) {
 	// Perform discovery if not already done:
-	s.discoverOnce.Do(func() {
-		err = s.discover(ctx)
-	})
-	if err != nil {
-		err = fmt.Errorf("failed to discover metadata: %w", err)
+	if err = s.ensureDiscovered(ctx); err != nil {
 		return
 	}
 
