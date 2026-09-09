@@ -292,6 +292,10 @@ for crd in virtualmachines.kubevirt.io hostedclusters.hypershift.openshift.io; d
 done
 ```
 
+Phase 1 configures the `HyperConverged` resource once. Subsequent Phase 1
+upgrades detect an already Available resource and do not reapply that mutable
+CNV setup.
+
 Use the existing Keycloak Route as the discovery endpoint, then derive the
 issuer from its OpenID discovery document. This fails before Helm runs if the
 Route, realm, or issuer is unavailable. It requires `curl` and `jq`.

@@ -357,4 +357,5 @@ helm-validate: helm-lint ## Validate all charts (lint + template)
 	./scripts/validate-postgres-prerequisites.sh
 	./scripts/validate-keycloak-credentials.sh
 	./scripts/validate-external-keycloak.sh
+	./scripts/validate-cnv-hook.sh
 	@echo "Validation passed."

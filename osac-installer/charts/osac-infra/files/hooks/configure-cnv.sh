@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "$(oc get hyperconverged kubevirt-hyperconverged -n openshift-cnv -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)" == "True" ]]; then
+  echo "HyperConverged kubevirt-hyperconverged is already available."
+  exit 0
+fi
+
 echo "Waiting for CNV CSV to appear..."
 until oc get csv --no-headers -n openshift-cnv | grep -q kubevirt-hyperconverged-operator; do
   sleep 10

@@ -314,6 +314,10 @@ for crd in virtualmachines.kubevirt.io hostedclusters.hypershift.openshift.io; d
 done
 ```
 
+Phase 1 configures the `HyperConverged` resource once. Subsequent Phase 1
+upgrades detect an already Available resource and do not reapply that mutable
+CNV setup.
+
 The one thing kind does not need is a real AAP `license.zip`. Give all OSAC services the external
 realm's issuer URL in Phase 3:
 
