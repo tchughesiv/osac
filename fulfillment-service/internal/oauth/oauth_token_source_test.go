@@ -744,6 +744,56 @@ var _ = Describe("Token source", func() {
 		Expect(count).To(Equal(1))
 	})
 
+	It("Retries discovery after a failed attempt", func() {
+		// Make discovery fail for an issuer path that has no metadata document.
+		// The same source is then pointed at the server's valid issuer to verify
+		// that a failed discovery doesn't leave it permanently using an empty
+		// token endpoint.
+		server.RouteToHandler(
+			http.MethodGet,
+			"/unavailable/.well-known/oauth-authorization-server",
+			RespondWith(http.StatusNotFound, ""),
+		)
+		server.RouteToHandler(
+			http.MethodGet,
+			"/unavailable/.well-known/openid-configuration",
+			RespondWith(http.StatusNotFound, ""),
+		)
+		server.RouteToHandler(
+			http.MethodPost,
+			"/token",
+			RespondWithJSONEncoded(
+				http.StatusOK,
+				map[string]any{
+					"access_token": "my_access_token",
+					"token_type":   "Bearer",
+					"expires_in":   3600,
+				},
+			),
+		)
+
+		source, err := NewTokenSource().
+			SetLogger(logger).
+			SetIssuer(fmt.Sprintf("%s/unavailable", server.URL())).
+			SetStore(store).
+			SetFlow(CredentialsFlow).
+			SetClientId("my_client").
+			SetClientSecret("my_secret").
+			SetCaPool(caPool).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		_, err = source.Token(ctx)
+		Expect(err).To(MatchError(ContainSubstring("failed to discover metadata")))
+
+		// A retry with a reachable issuer must perform discovery again instead of
+		// using the zero-value token endpoint from the failed attempt.
+		source.issuer = server.URL()
+		token, err := source.Token(ctx)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(token.Access).To(Equal("my_access_token"))
+	})
+
 	It("Uses all default scopes when server supports them all", func() {
 		// Create a server that supports all default scopes:
 		server, caFile := testing.MakeTCPTLSServer()

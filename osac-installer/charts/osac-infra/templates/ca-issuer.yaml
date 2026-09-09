@@ -49,7 +49,7 @@ spec:
   - secret:
       name: "default-ca"
       key: "ca.crt"
-  {{- if .Values.keycloak.route.publicIngress }}
+  {{- if or .Values.keycloak.route.publicIngress (and .Values.keycloak.enabled (eq .Values.keycloak.mode "external")) }}
   - useDefaultCAs: true
   {{- end }}
   target:

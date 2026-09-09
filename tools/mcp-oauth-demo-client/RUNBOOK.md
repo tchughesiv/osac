@@ -286,6 +286,19 @@ oc get secret osac-keycloak-client-secrets -n "$KEYCLOAK_NAMESPACE"
 oc get pods -n osac-infra
 ```
 
+In external mode, OSAC's shared `ca-bundle` automatically includes the standard
+system CA roots, allowing in-cluster components to verify a publicly trusted
+RHBK Route. Never bypass TLS verification. If the Route uses a private CA, have
+the Keycloak or cluster administrator add that CA to the OSAC trust bundle before
+continuing with Phase 3.
+
+Wait for the updated bundle before starting Phase 3:
+
+```bash
+oc wait --for=condition=Synced bundles.trust.cert-manager.io/ca-bundle --timeout=5m
+oc get configmap ca-bundle -n "$OSAC_NAMESPACE"
+```
+
 ### 3. Install OSAC against the imported realm
 
 The demo profile installs OpenShift Virtualization and MultiCluster Engine because

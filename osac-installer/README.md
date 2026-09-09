@@ -322,6 +322,21 @@ credential Secret is intentionally retained when `osac-infra` is uninstalled so
 the same realm can be used again. Coordinate manual realm and Secret cleanup with
 the Keycloak administrator when retiring the OSAC installation.
 
+External mode automatically adds standard system CA roots to OSAC's shared
+`ca-bundle`, so controllers can verify a publicly trusted RHBK Route. Do not use
+an insecure TLS bypass. If the Route is signed by a private CA, have the Keycloak
+or cluster administrator make that CA available to the OSAC trust bundle before
+running Phase 3.
+
+Wait for `trust-manager` to publish that bundle before starting Phase 3:
+
+```bash
+KUBECONFIG="$HOME/.kube/config" \
+  oc wait --for=condition=Synced bundles.trust.cert-manager.io/ca-bundle --timeout=5m
+KUBECONFIG="$HOME/.kube/config" \
+  oc get configmap ca-bundle -n osac-demo
+```
+
 #### AAP Configuration
 
 AAP instance groups carry backend credentials for provisioning jobs.

@@ -62,6 +62,12 @@ if resource(external, "Deployment", "keycloak-service", "keycloak") is not None:
 if resource(external, "StatefulSet", "keycloak-database", "keycloak") is not None:
     errors.append("external mode must not deploy the bundled Keycloak database")
 
+bundle = resource(external, "Bundle", "ca-bundle")
+if bundle is None:
+    errors.append("external mode must render the shared CA bundle")
+elif {"useDefaultCAs": True} not in bundle.get("spec", {}).get("sources", []):
+    errors.append("external mode must add system CA roots for the external Keycloak Route")
+
 secret = resource(external, "Secret", "osac-demo-client-secrets", "external-keycloak")
 if secret is None:
     errors.append("external mode must create the OSAC client-secret source")
