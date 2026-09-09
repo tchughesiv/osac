@@ -317,6 +317,11 @@ make INFRA_VALUES=values/dev/external-rhbk-demo-infra.yaml \
   install-osac PLATFORM=openshift PROFILE=dev NS=osac-demo AAP_LICENSE_FILE=/absolute/path/to/license.zip
 ```
 
+The controller derives its Keycloak administration realm from
+`service.auth.issuerUrl`, so the discovery-derived issuer must retain the
+`/realms/osac-demo` suffix. `service.idp.url` is intentionally the Keycloak
+base URL, without that suffix.
+
 RHBK realm imports create a realm but do not update or delete it. The external
 credential Secret is intentionally retained when `osac-infra` is uninstalled so
 the same realm can be used again. Coordinate manual realm and Secret cleanup with

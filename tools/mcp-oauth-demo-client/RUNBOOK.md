@@ -328,6 +328,11 @@ make INFRA_VALUES=values/dev/external-rhbk-demo-infra.yaml \
   install-osac PLATFORM=openshift PROFILE=dev NS="$OSAC_NAMESPACE" AAP_LICENSE_FILE=/path/to/license.zip
 ```
 
+The controller derives its Keycloak administration realm from
+`service.auth.issuerUrl`, so keep the discovery-derived
+`/realms/$OSAC_REALM` suffix there. `service.idp.url` is deliberately the
+Keycloak base URL, without that suffix.
+
 `install-osac` derives OSAC's Route hostnames from `oc get ingresses.config/cluster`; unlike kind,
 there is no `/etc/hosts` step.
 
