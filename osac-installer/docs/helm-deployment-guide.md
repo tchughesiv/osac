@@ -207,11 +207,14 @@ defaults to that version so no system-wide default is needed. The seeder uses a
 short-lived `admin` ServiceAccount token, a temporary port-forward, and the
 namespace's `ca-bundle`; it verifies TLS, reuses named fixtures, and reconciles
 the template version default when rerun. The reference OAuth client remains
-local and connects through the Kind TLS gateway. This catalog fixture supports
-the four Deployment MCP tools, but Kind `dev` does not provide an AAP or
-HostedCluster backend. A created Cluster therefore demonstrates catalog
-selection, authentication, and attribution only; it is not a deployable
-OpenShift cluster. The complete browser-OAuth demo is documented in
+local and connects through the Kind TLS gateway. It also creates the local
+`tenant1` record, matching Keycloak organization, and dev-user membership;
+rerun the browser OAuth flow after seeding to receive the required
+`organization` claim. This catalog fixture supports the four Deployment MCP
+tools, but Kind `dev` does not provide an AAP or HostedCluster backend. A
+created Cluster therefore demonstrates catalog selection, authentication, and
+attribution only; it is not a deployable OpenShift cluster. The complete
+browser-OAuth demo is documented in
 [`../../tools/mcp-oauth-demo-client/RUNBOOK.md`](../../tools/mcp-oauth-demo-client/RUNBOOK.md).
 
 ## Uninstall

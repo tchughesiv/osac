@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALLER_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SEED_SCRIPT="${SCRIPT_DIR}/seed-mcp-demo-catalog.sh"
+TENANT_PROVISIONER="${SCRIPT_DIR}/dev-full/provision-tenant.sh"
 OSAC_CHART="${INSTALLER_DIR}/charts/osac"
 KIND_VALUES="${INSTALLER_DIR}/values/dev/kind-instance.yaml"
 KIND_INFRA_VALUES="${INSTALLER_DIR}/values/dev/kind-infra.yaml"
@@ -14,6 +15,13 @@ fail() {
 }
 
 [[ -x "${SEED_SCRIPT}" ]] || fail "missing executable MCP demo catalog seeder: ${SEED_SCRIPT}"
+[[ -x "${TENANT_PROVISIONER}" ]] || fail "missing reusable Kind tenant provisioner: ${TENANT_PROVISIONER}"
+rg -F 'CREATE_SUBNET_TARGET_NAMESPACES="${CREATE_SUBNET_TARGET_NAMESPACES:-true}"' \
+    "${TENANT_PROVISIONER}" >/dev/null || \
+    fail "tenant provisioner must keep VM subnet-target namespaces enabled by default"
+rg -F 'if [[ "${CREATE_SUBNET_TARGET_NAMESPACES}" == "true" ]]; then' \
+    "${TENANT_PROVISIONER}" >/dev/null || \
+    fail "tenant provisioner must allow the MCP demo to skip VM-only subnet-target namespaces"
 rg -F 'set_password "tenant1_user"' \
     "${INSTALLER_DIR}/charts/osac-infra/templates/keycloak/resources.yaml" >/dev/null || \
     fail "Kind dev fixtures must seed the tenant1_user password used by the MCP demo"
@@ -130,6 +138,8 @@ if ! output=$(DEPS_HELM_ARGS='--set unexpected.deps=true' \
 fi
 [[ "${output}" == *"./scripts/seed-mcp-demo-catalog.sh mcp-demo"* ]] || \
     fail "install-mcp-demo must seed the catalog after installing OSAC"
+[[ "${output}" == *"CREATE_SUBNET_TARGET_NAMESPACES=false ./scripts/dev-full/provision-tenant.sh mcp-demo"* ]] || \
+    fail "install-mcp-demo must provision the MCP demo tenant without VM subnet-target namespaces"
 [[ "${output}" == *"build -t localhost/fulfillment-service:mcp-demo"* ]] || \
     fail "install-mcp-demo must build the fulfillment-service image from this checkout"
 [[ "${output}" == *"service.mcp.enabled=true"* ]] || \

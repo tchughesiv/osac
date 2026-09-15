@@ -335,8 +335,9 @@ install-mcp-demo: ## Install Kind dev OSAC, its MCP server, and the Cluster cata
 	$(MAKE) seed-mcp-demo-catalog PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS)
 
 .PHONY: seed-mcp-demo-catalog
-seed-mcp-demo-catalog: ## Seed the Kind dev Cluster catalog item required by the MCP PoC
+seed-mcp-demo-catalog: ## Seed Kind dev Cluster catalog and tenant fixtures required by the MCP PoC
 	./scripts/seed-mcp-demo-catalog.sh $(NS)
+	CREATE_SUBNET_TARGET_NAMESPACES=false ./scripts/dev-full/provision-tenant.sh $(NS)
 
 .PHONY: uninstall
 uninstall: uninstall-osac uninstall-infra ## Full uninstall: osac + infra (PLATFORM= PROFILE= required)

@@ -27,7 +27,8 @@
 #
 # Usage: provision-tenant.sh [osac-namespace]
 #   Env overrides: TENANT, TENANT_USERS (comma-separated), KC_NS, KC_REALM,
-#                  INTERNAL_SVC, INTERNAL_PORT, GRPCURL_IMAGE
+#                  INTERNAL_SVC, INTERNAL_PORT, GRPCURL_IMAGE,
+#                  CREATE_SUBNET_TARGET_NAMESPACES (true or false; true by default)
 
 set -euo pipefail
 
@@ -39,6 +40,15 @@ KC_REALM="${KC_REALM:-osac}"
 INTERNAL_SVC="${INTERNAL_SVC:-fulfillment-internal-api}"
 INTERNAL_PORT="${INTERNAL_PORT:-8001}"
 GRPCURL_IMAGE="${GRPCURL_IMAGE:-docker.io/fullstorydev/grpcurl:latest}"
+CREATE_SUBNET_TARGET_NAMESPACES="${CREATE_SUBNET_TARGET_NAMESPACES:-true}"
+
+case "${CREATE_SUBNET_TARGET_NAMESPACES}" in
+  true|false) ;;
+  *)
+    echo "CREATE_SUBNET_TARGET_NAMESPACES must be true or false" >&2
+    exit 1
+    ;;
+esac
 
 log()  { echo "[+] $*"; }
 warn() { echo "[!] $*" >&2; }
@@ -80,41 +90,47 @@ else
 fi
 
 # ── 1b. Create the subnet target namespace(s) ───────────────────────────────────
-# Each Subnet gets its own k8s namespace named after the Subnet CR: the osac-operator
-# ComputeInstance controller creates/looks for the KubeVirt VM in that
-# subnet-target namespace (osac.openshift.io/subnet-target-namespace annotation),
-# NOT in the tenant namespace. In a real environment that namespace is created by
-# subnet provisioning (the cudn_net role, which also builds the OVN CUDN). On kind
-# networkingProvisioning=false makes subnets reconcile to Ready without any AAP
-# dispatch, so nothing creates the namespace and the VM would have nowhere to live
-# (the CI would hang at Provisioned=False/WaitingForVM). kind VMs use the default
-# pod network + cluster-wide l2bridge binding — no per-namespace CUDN/NAD — so a
-# plain namespace is all that's needed. Create one per onboarded subnet (idempotent).
-#
-# Subnets are scoped to a tenant by the osac.openshift.io/tenant annotation (not a
-# label), and onboarding creates them asynchronously, so poll for the tenant's
-# subnet(s) to appear before creating their namespaces.
-subnets_for_tenant() {
-  kubectl -n "${NS}" get subnets -o json 2>/dev/null | python3 -c "
+# The MCP demo only creates Clusters and has no KubeVirt backend, so it reuses
+# this tenant bootstrap with this VM-only work disabled.
+if [[ "${CREATE_SUBNET_TARGET_NAMESPACES}" == "true" ]]; then
+  # Each Subnet gets its own k8s namespace named after the Subnet CR: the osac-operator
+  # ComputeInstance controller creates/looks for the KubeVirt VM in that
+  # subnet-target namespace (osac.openshift.io/subnet-target-namespace annotation),
+  # NOT in the tenant namespace. In a real environment that namespace is created by
+  # subnet provisioning (the cudn_net role, which also builds the OVN CUDN). On kind
+  # networkingProvisioning=false makes subnets reconcile to Ready without any AAP
+  # dispatch, so nothing creates the namespace and the VM would have nowhere to live
+  # (the CI would hang at Provisioned=False/WaitingForVM). kind VMs use the default
+  # pod network + cluster-wide l2bridge binding — no per-namespace CUDN/NAD — so a
+  # plain namespace is all that's needed. Create one per onboarded subnet (idempotent).
+  #
+  # Subnets are scoped to a tenant by the osac.openshift.io/tenant annotation (not a
+  # label), and onboarding creates them asynchronously, so poll for the tenant's
+  # subnet(s) to appear before creating their namespaces.
+  subnets_for_tenant() {
+    kubectl -n "${NS}" get subnets -o json 2>/dev/null | python3 -c "
 import json,sys
 for s in json.load(sys.stdin).get('items', []):
     if s.get('metadata', {}).get('annotations', {}).get('osac.openshift.io/tenant') == '${TENANT}':
         print(s['metadata']['name'])
 " 2>/dev/null || true
-}
-onboarded_subnets=""
-for _ in $(seq 1 30); do
-  onboarded_subnets=$(subnets_for_tenant)
-  [[ -n "${onboarded_subnets}" ]] && break
-  sleep 2
-done
-if [[ -z "${onboarded_subnets}" ]]; then
-  warn "  no subnet found for tenant '${TENANT}' yet — VM provisioning will hang until its subnet namespace exists"
-else
-  for sn in ${onboarded_subnets}; do
-    kubectl create namespace "${sn}" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-    log "  subnet target namespace ready: ${sn}"
+  }
+  onboarded_subnets=""
+  for _ in $(seq 1 30); do
+    onboarded_subnets=$(subnets_for_tenant)
+    [[ -n "${onboarded_subnets}" ]] && break
+    sleep 2
   done
+  if [[ -z "${onboarded_subnets}" ]]; then
+    warn "  no subnet found for tenant '${TENANT}' yet — VM provisioning will hang until its subnet namespace exists"
+  else
+    for sn in ${onboarded_subnets}; do
+      kubectl create namespace "${sn}" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+      log "  subnet target namespace ready: ${sn}"
+    done
+  fi
+else
+  log "  skipping VM subnet target namespaces"
 fi
 
 # ── 2 & 3. Keycloak organization + membership ───────────────────────────────────

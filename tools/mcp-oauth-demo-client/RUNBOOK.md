@@ -99,6 +99,13 @@ reinstalling it, run:
 make seed-mcp-demo-catalog PLATFORM=kind PROFILE=dev NS=osac
 ```
 
+This also creates the `tenant1` OSAC tenant, matching Keycloak organization,
+and dev-user membership required for resource creation.
+
+If this command adds the organization membership, close the prior browser
+login and rerun the client so Keycloak issues a token containing the
+`organization` claim.
+
 Then point your host at the MCP endpoint and Keycloak through Kind's Envoy Gateway:
 
 ```bash
