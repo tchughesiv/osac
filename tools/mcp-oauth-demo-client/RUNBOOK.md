@@ -61,9 +61,11 @@ builds and loads the branch's fulfillment-service image, then adds an
 in-cluster MCP endpoint and a ClusterVersion → HostType → ClusterTemplate →
 published ClusterCatalogItem fixture. The template includes an explicit
 cluster-version default, so the demo does not depend on a system-wide default
-version. It does not provide a real HostedCluster backend, so a created Cluster
-proves catalog selection, API authentication, and attribution—not a usable
-OpenShift cluster for application deployment.
+version, and the provider-style ID `osac.templates.mcp_demo_cluster`, which
+OSAC forwards directly to `ClusterOrder.spec.templateID`. It does not provide
+a real HostedCluster backend, so a created Cluster proves catalog selection,
+API authentication, and attribution—not a usable OpenShift cluster for
+application deployment.
 
 ### 1. Boot infra + OSAC
 
@@ -97,6 +99,14 @@ reinstalling it, run:
 
 ```bash
 make seed-mcp-demo-catalog PLATFORM=kind PROFILE=dev NS=osac
+```
+
+If the fixture was created by an earlier revision of this branch, do a clean
+Kind reset instead of attempting to migrate its immutable template ID:
+
+```bash
+make uninstall PLATFORM=kind PROFILE=dev NS=osac
+make install-mcp-demo PLATFORM=kind PROFILE=dev NS=osac
 ```
 
 This also creates the `tenant1` OSAC tenant, matching Keycloak organization,

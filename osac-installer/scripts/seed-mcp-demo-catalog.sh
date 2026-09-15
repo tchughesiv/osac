@@ -14,6 +14,9 @@ CLUSTER_VERSION_NAME="mcp-demo-cluster-version"
 CLUSTER_VERSION="4.20.0"
 CLUSTER_RELEASE_IMAGE="quay.io/openshift-release-dev/ocp-release:4.20.0-multi"
 TEMPLATE_NAME="mcp-demo-template"
+# ClusterTemplate IDs are forwarded unchanged to ClusterOrder.spec.templateID.
+# They must therefore use the AAP role-name format enforced by that CRD.
+TEMPLATE_ID="osac.templates.mcp_demo_cluster"
 CATALOG_ITEM_NAME="mcp-demo-cluster"
 
 fail() {
@@ -163,12 +166,11 @@ ensure_cluster_template() {
     local response
     local id
     local lookup_status
-    local update_body
 
     if existing_id="$(lookup_id cluster_templates "${TEMPLATE_NAME}")"; then
-        update_body="$(jq --arg id "${existing_id}" '. + {id: $id}' <<<"${body}")" || \
-            fail "could not prepare cluster template ${TEMPLATE_NAME} for update"
-        api_update cluster_templates "${existing_id}" "${update_body}" >/dev/null || \
+        [[ "${existing_id}" == "${TEMPLATE_ID}" ]] || fail \
+            "MCP demo template ${TEMPLATE_NAME} has immutable ID ${existing_id}; recreate the Kind dev cluster before reseeding"
+        api_update cluster_templates "${existing_id}" "${body}" >/dev/null || \
             fail "could not update cluster template ${TEMPLATE_NAME}"
         log "Reconciled cluster template: ${TEMPLATE_NAME}"
         printf '%s\n' "${existing_id}"
@@ -184,6 +186,8 @@ ensure_cluster_template() {
         fail "could not create cluster template ${TEMPLATE_NAME}"
     id="$(jq -er '.id' <<<"${response}")" || \
         fail "private API did not return an id for cluster template ${TEMPLATE_NAME}"
+    [[ "${id}" == "${TEMPLATE_ID}" ]] || \
+        fail "private API created MCP demo template with ID ${id}, expected ${TEMPLATE_ID}"
     log "Created cluster template: ${TEMPLATE_NAME}"
     printf '%s\n' "${id}"
 }
@@ -201,10 +205,11 @@ cluster_version_body="$(jq -n \
 ensure_resource cluster_versions 'cluster version' "${CLUSTER_VERSION_NAME}" "${cluster_version_body}" >/dev/null
 
 template_body="$(jq -n \
+    --arg id "${TEMPLATE_ID}" \
     --arg name "${TEMPLATE_NAME}" \
     --arg host_type_id "${host_type_id}" \
     --arg cluster_version_name "${CLUSTER_VERSION_NAME}" \
-    '{metadata: {name: $name}, title: "MCP demo cluster template", node_sets: {workers: {host_type: {id: $host_type_id}, size: 3}}, spec_defaults: {version: {name: $cluster_version_name}}}')"
+    '{id: $id, metadata: {name: $name}, title: "MCP demo cluster template", node_sets: {workers: {host_type: {id: $host_type_id}, size: 3}}, spec_defaults: {version: {name: $cluster_version_name}}}')"
 template_id="$(ensure_cluster_template "${template_body}")"
 
 catalog_item_body="$(jq -n \

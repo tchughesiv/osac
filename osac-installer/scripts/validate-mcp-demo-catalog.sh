@@ -73,9 +73,9 @@ printf '%s\n' \
     '  */cluster_versions)' \
     '    if [[ "${method}" == "POST" ]]; then printf "{\\\"id\\\":\\\"cluster-version-id\\\"}\\n"; elif [[ "${CURL_MODE}" == "existing" ]]; then printf "{\\\"items\\\":[{\\\"id\\\":\\\"cluster-version-id\\\",\\\"metadata\\\":{\\\"name\\\":\\\"mcp-demo-cluster-version\\\"}}]}\\n"; else printf "{\\\"items\\\":[]}\\n"; fi ;;' \
     '  */cluster_templates)' \
-    '    if [[ "${method}" == "POST" ]]; then printf "{\\\"id\\\":\\\"template-id\\\"}\\n"; elif [[ "${CURL_MODE}" == "existing" ]]; then printf "{\\\"items\\\":[{\\\"id\\\":\\\"template-id\\\",\\\"metadata\\\":{\\\"name\\\":\\\"mcp-demo-template\\\"}}]}\\n"; else printf "{\\\"items\\\":[]}\\n"; fi ;;' \
-    '  */cluster_templates/template-id)' \
-    '    [[ "${method}" == "PATCH" ]] || { printf "expected PATCH for existing cluster template\\n" >&2; exit 1; }; printf "{\\\"id\\\":\\\"template-id\\\"}\\n" ;;' \
+    '    if [[ "${method}" == "POST" ]]; then printf "{\\\"id\\\":\\\"osac.templates.mcp_demo_cluster\\\"}\\n"; elif [[ "${CURL_MODE}" == "existing" ]]; then printf "{\\\"items\\\":[{\\\"id\\\":\\\"osac.templates.mcp_demo_cluster\\\",\\\"metadata\\\":{\\\"name\\\":\\\"mcp-demo-template\\\"}}]}\\n"; elif [[ "${CURL_MODE}" == "legacy" ]]; then printf "{\\\"items\\\":[{\\\"id\\\":\\\"00000000-0000-7000-8000-000000000000\\\",\\\"metadata\\\":{\\\"name\\\":\\\"mcp-demo-template\\\"}}]}\\n"; else printf "{\\\"items\\\":[]}\\n"; fi ;;' \
+    '  */cluster_templates/osac.templates.mcp_demo_cluster)' \
+    '    [[ "${method}" == "PATCH" ]] || { printf "expected PATCH for existing cluster template\\n" >&2; exit 1; }; printf "{\\\"id\\\":\\\"osac.templates.mcp_demo_cluster\\\"}\\n" ;;' \
     '  */cluster_catalog_items)' \
     '    if [[ "${method}" == "POST" ]]; then printf "{\\\"id\\\":\\\"catalog-item-id\\\"}\\n"; elif [[ "${CURL_MODE}" == "existing" ]]; then printf "{\\\"items\\\":[{\\\"id\\\":\\\"catalog-item-id\\\",\\\"metadata\\\":{\\\"name\\\":\\\"mcp-demo-cluster\\\"}}]}\\n"; else printf "{\\\"items\\\":[]}\\n"; fi ;;' \
     '  *) printf "unexpected curl URL: %s\\n" "${url}" >&2; exit 1 ;;' \
@@ -89,6 +89,15 @@ run_seed() {
         LOCAL_PORT=18444 "${SEED_SCRIPT}" mcp-demo >"${tmp_dir}/${mode}.out" 2>&1; then
         cat "${tmp_dir}/${mode}.out" >&2
         fail "MCP demo catalog seeder failed in ${mode} mode"
+    fi
+}
+
+run_seed_failure() {
+    local mode="$1"
+    : >"${request_log}"
+    if PATH="${fake_bin}:${PATH}" CURL_LOG="${request_log}" CURL_MODE="${mode}" \
+        LOCAL_PORT=18444 "${SEED_SCRIPT}" mcp-demo >"${tmp_dir}/${mode}.out" 2>&1; then
+        fail "MCP demo catalog seeder unexpectedly succeeded in ${mode} mode"
     fi
 }
 
@@ -116,6 +125,8 @@ rg -F 'quay.io/openshift-release-dev/ocp-release:4.20.0-multi' "${request_log}" 
     fail "seeder did not set the MCP demo release image"
 rg -F 'spec_defaults' "${request_log}" >/dev/null || \
     fail "seeder did not set the template cluster-version default"
+rg -F 'osac.templates.mcp_demo_cluster' "${request_log}" >/dev/null || \
+    fail "seeder did not assign an AAP-style ID to the MCP demo template"
 
 run_seed existing
 if rg -F -- '-X POST' "${request_log}" >/dev/null; then
@@ -123,12 +134,20 @@ if rg -F -- '-X POST' "${request_log}" >/dev/null; then
 fi
 rg -F -- '-X PATCH' "${request_log}" >/dev/null || \
     fail "seeder must reconcile the existing cluster template"
-rg -F 'api_update cluster_templates "${existing_id}" "${update_body}" >/dev/null' "${SEED_SCRIPT}" >/dev/null || \
-    fail "template reconciliation must not mix the API response with the template identifier"
+rg -F 'api_update cluster_templates "${existing_id}" "${body}" >/dev/null' "${SEED_SCRIPT}" >/dev/null || \
+    fail "template reconciliation must preserve the explicitly assigned template identifier"
 rg -F 'Reconciled cluster template: mcp-demo-template' "${tmp_dir}/existing.out" >/dev/null || \
     fail "seeder did not report template reconciliation"
 rg -F 'Reusing catalog item: mcp-demo-cluster' "${tmp_dir}/existing.out" >/dev/null || \
     fail "seeder did not report reuse of the existing catalog item"
+
+run_seed_failure legacy
+rg -F 'has immutable ID 00000000-0000-7000-8000-000000000000; recreate the Kind dev cluster before reseeding' \
+    "${tmp_dir}/legacy.out" >/dev/null || \
+    fail "seeder must direct a legacy fixture to a clean Kind recreation"
+if rg -F -- '-X PATCH' "${request_log}" >/dev/null; then
+    fail "seeder must not attempt to mutate a legacy template identity"
+fi
 
 if ! output=$(DEPS_HELM_ARGS='--set unexpected.deps=true' \
     INFRA_HELM_ARGS='--set unexpected.infra=true' \

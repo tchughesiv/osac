@@ -206,8 +206,10 @@ It then uses the private API to safely seed a minimal ClusterVersion → HostTyp
 defaults to that version so no system-wide default is needed. The seeder uses a
 short-lived `admin` ServiceAccount token, a temporary port-forward, and the
 namespace's `ca-bundle`; it verifies TLS, reuses named fixtures, and reconciles
-the template version default when rerun. The reference OAuth client remains
-local and connects through the Kind TLS gateway. It also creates the local
+the template version default when rerun. The ClusterTemplate uses the
+provider-style ID `osac.templates.mcp_demo_cluster`, because OSAC forwards that
+ID directly to `ClusterOrder.spec.templateID`. The reference OAuth client
+remains local and connects through the Kind TLS gateway. It also creates the local
 `tenant1` record, matching Keycloak organization, and dev-user membership;
 rerun the browser OAuth flow after seeding to receive the required
 `organization` claim. This catalog fixture supports the four Deployment MCP
@@ -216,6 +218,15 @@ created Cluster therefore demonstrates catalog selection, authentication, and
 attribution only; it is not a deployable OpenShift cluster. The complete
 browser-OAuth demo is documented in
 [`../../tools/mcp-oauth-demo-client/RUNBOOK.md`](../../tools/mcp-oauth-demo-client/RUNBOOK.md).
+
+Earlier branch revisions seeded an auto-generated template UUID, which cannot
+be used as `ClusterOrder.spec.templateID`. For a clean local reset rather than
+a fixture migration, run:
+
+```bash
+make uninstall PLATFORM=kind PROFILE=dev NS=osac
+make install-mcp-demo PLATFORM=kind PROFILE=dev NS=osac
+```
 
 ## Uninstall
 

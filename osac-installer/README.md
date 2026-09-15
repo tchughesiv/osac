@@ -169,12 +169,22 @@ The target uses a short-lived `admin` ServiceAccount token and a temporary
 port-forward to seed `ClusterVersion` → `HostType` → `ClusterTemplate` →
 `ClusterCatalogItem` through the private API, with TLS verified using the
 namespace's `ca-bundle`. It reuses existing fixture names and reconciles the
-template version default on rerun. It also provisions the local `tenant1`
-tenant, matching Keycloak organization, and dev-user membership, so the OAuth
-user receives the `organization` claim required to create resources. For an
+template version default on rerun. The ClusterTemplate is created with the
+provider-style ID `osac.templates.mcp_demo_cluster`, because OSAC forwards that
+ID directly to `ClusterOrder.spec.templateID`. It also provisions the local
+`tenant1` tenant, matching Keycloak organization, and dev-user membership, so
+the OAuth user receives the `organization` claim required to create resources. For an
 existing Kind `dev` install, run only
 `make seed-mcp-demo-catalog PLATFORM=kind PROFILE=dev NS=osac`, then start a
 new browser login to obtain an updated token.
+
+If the fixture was seeded by an earlier version of this branch, recreate the
+Kind cluster instead of trying to alter its immutable template identity:
+
+```bash
+make uninstall PLATFORM=kind PROFILE=dev NS=osac
+make install-mcp-demo PLATFORM=kind PROFILE=dev NS=osac
+```
 
 This is an API/authentication/attribution demo: Kind `dev` has no AAP or
 HostedCluster provisioning backend, so the Cluster it creates is not a usable
