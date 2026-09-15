@@ -75,6 +75,17 @@ export KUBECONFIG="$HOME/.kube/osac-dev-kind.kubeconfig"
 kubectl get pods -n osac
 ```
 
+If you ran an earlier checkout of this branch before the MCP OAuth client was
+added, rerun the infrastructure target once before starting the local client.
+The Kind-only post-upgrade fixture Job creates or updates just the public
+`osac-mcp-client` through the Keycloak Admin API; it does not overwrite the
+existing realm.
+
+```bash
+DEPS_HELM_ARGS='' INFRA_HELM_ARGS='' \
+  make install-infra PLATFORM=kind PROFILE=dev NS=osac
+```
+
 `install-mcp-demo` uses a short-lived `admin` ServiceAccount token, a temporary
 local port-forward, and the `ca-bundle` ConfigMap to seed the fixture through
 the private API. It verifies TLS and is safe to rerun: an existing fixture is
@@ -129,7 +140,7 @@ GOWORK=off go run . \
 ```
 
 A browser tab opens to Keycloak's login page (expect a self-signed-cert warning — click through it).
-Log in as **`user` / `foobar`** (a regular, non-admin dev-fixture tenant user — `devFixtures.enabled`
+Log in as **`tenant1_user` / `foobar`** (a regular, non-admin dev-fixture tenant user — `devFixtures.enabled`
 in `kind-infra.yaml`). After login, the terminal drives `list_catalog_items` →
 `describe_catalog_item` → `create_cluster_from_catalog_item` → `get_cluster_status` and prints each
 result. The cluster it creates will likely sit in a pending/error state since AAP isn't running on

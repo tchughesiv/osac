@@ -6,6 +6,7 @@ INSTALLER_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SEED_SCRIPT="${SCRIPT_DIR}/seed-mcp-demo-catalog.sh"
 OSAC_CHART="${INSTALLER_DIR}/charts/osac"
 KIND_VALUES="${INSTALLER_DIR}/values/dev/kind-instance.yaml"
+KIND_INFRA_VALUES="${INSTALLER_DIR}/values/dev/kind-infra.yaml"
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -13,6 +14,16 @@ fail() {
 }
 
 [[ -x "${SEED_SCRIPT}" ]] || fail "missing executable MCP demo catalog seeder: ${SEED_SCRIPT}"
+rg -F 'set_password "tenant1_user"' \
+    "${INSTALLER_DIR}/charts/osac-infra/templates/keycloak/resources.yaml" >/dev/null || \
+    fail "Kind dev fixtures must seed the tenant1_user password used by the MCP demo"
+rg -F 'ensure_mcp_client()' \
+    "${INSTALLER_DIR}/charts/osac-infra/templates/keycloak/resources.yaml" >/dev/null || \
+    fail "Kind dev fixtures must reconcile the MCP OAuth client after a chart upgrade"
+if rg -F 'set_password "user"' \
+    "${INSTALLER_DIR}/charts/osac-infra/templates/keycloak/resources.yaml" >/dev/null; then
+    fail "Kind dev fixtures must not reference the removed user fixture"
+fi
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
@@ -126,6 +137,19 @@ fi
 if ! helm dependency build "${OSAC_CHART}" >/dev/null; then
     fail "failed to build chart dependencies for MCP demo rendering"
 fi
+
+if ! infra_rendered=$(helm template osac-infra "${INSTALLER_DIR}/charts/osac-infra" \
+    --namespace osac-infra --values "${KIND_INFRA_VALUES}" --set osacNamespace=mcp-demo); then
+    fail "failed to render the Kind MCP demo infrastructure chart"
+fi
+for expected in \
+    'Ensuring Keycloak client ${client_id} is registered...' \
+    'https://keycloak:443/admin/realms/osac/clients?clientId=${client_id}' \
+    'mountPath: /realm' \
+    'name: keycloak-realm'; do
+    rg -F -- "${expected}" <<<"${infra_rendered}" >/dev/null || \
+        fail "Kind MCP demo infrastructure render is missing: ${expected}"
+done
 
 if ! rendered="$(helm template osac "${OSAC_CHART}" --namespace mcp-demo --values "${KIND_VALUES}" \
     --set service.mcp.enabled=true \
