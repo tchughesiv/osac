@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Seeds the minimal catalog chain needed by the Cluster-focused MCP demo.
+#
+# Usage: seed-mcp-demo-catalog.sh [osac-namespace]
+
+NS="${1:-${NS:-osac}}"
+LOCAL_PORT="${LOCAL_PORT:-8444}"
+API_HOST="fulfillment-internal-api.${NS}.svc.cluster.local"
+API_URL="https://${API_HOST}:${LOCAL_PORT}/api/private/v1"
+HOST_TYPE_NAME="mcp-demo-host-type"
+TEMPLATE_NAME="mcp-demo-template"
+CATALOG_ITEM_NAME="mcp-demo-cluster"
+
+fail() {
+    printf 'ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+log() {
+    printf '%s\n' "$*" >&2
+}
+
+for command in kubectl curl jq; do
+    command -v "${command}" >/dev/null || fail "${command} is required"
+done
+
+[[ "${LOCAL_PORT}" =~ ^[1-9][0-9]{0,4}$ ]] || fail "LOCAL_PORT must be a TCP port number"
+((LOCAL_PORT <= 65535)) || fail "LOCAL_PORT must be a TCP port number"
+
+tmp_dir="$(mktemp -d)"
+ca_file="${tmp_dir}/bundle.pem"
+port_forward_log="${tmp_dir}/port-forward.log"
+port_forward_pid=""
+
+cleanup() {
+    if [[ -n "${port_forward_pid}" ]]; then
+        kill "${port_forward_pid}" 2>/dev/null || true
+        wait "${port_forward_pid}" 2>/dev/null || true
+    fi
+    rm -rf "${tmp_dir}"
+}
+trap cleanup EXIT
+
+kubectl -n "${NS}" get configmap ca-bundle -o jsonpath='{.data.bundle\.pem}' >"${ca_file}"
+[[ -s "${ca_file}" ]] || fail "ca-bundle in namespace ${NS} has no bundle.pem"
+
+admin_token="$(kubectl -n "${NS}" create token admin --duration=10m)"
+[[ -n "${admin_token}" ]] || fail "could not create a token for service account ${NS}/admin"
+
+kubectl -n "${NS}" port-forward service/fulfillment-internal-api "${LOCAL_PORT}:8001" --address=127.0.0.1 \
+    >"${port_forward_log}" 2>&1 &
+port_forward_pid=$!
+
+api_list() {
+    local resource="$1"
+    curl --fail --silent --show-error \
+        --cacert "${ca_file}" \
+        --resolve "${API_HOST}:${LOCAL_PORT}:127.0.0.1" \
+        --header "Authorization: Bearer ${admin_token}" \
+        "${API_URL}/${resource}"
+}
+
+api_list_with_retry() {
+    local resource="$1"
+    local response
+    local attempt
+
+    for attempt in $(seq 1 30); do
+        if response="$(api_list "${resource}")"; then
+            printf '%s\n' "${response}"
+            return 0
+        fi
+        sleep 1
+    done
+
+    printf 'ERROR: timed out waiting for the private fulfillment API; port-forward log follows:\n' >&2
+    cat "${port_forward_log}" >&2
+    return 1
+}
+
+api_create() {
+    local resource="$1"
+    local body="$2"
+
+    curl --fail --silent --show-error \
+        --cacert "${ca_file}" \
+        --resolve "${API_HOST}:${LOCAL_PORT}:127.0.0.1" \
+        --header "Authorization: Bearer ${admin_token}" \
+        --header "Content-Type: application/json" \
+        -X POST \
+        --data "${body}" \
+        "${API_URL}/${resource}"
+}
+
+lookup_id() {
+    local resource="$1"
+    local name="$2"
+    local response
+    local matches
+    local count
+
+    response="$(api_list_with_retry "${resource}")" || return 2
+    matches="$(jq --arg name "${name}" '[.items[]? | select(.metadata.name == $name)]' <<<"${response}")" || return 2
+    count="$(jq -r 'length' <<<"${matches}")" || return 2
+
+    case "${count}" in
+        0) return 1 ;;
+        1) jq -er '.[0].id' <<<"${matches}" ;;
+        *) printf 'ERROR: multiple %s fixtures named %s exist\n' "${resource}" "${name}" >&2; return 2 ;;
+    esac
+}
+
+ensure_resource() {
+    local resource="$1"
+    local label="$2"
+    local name="$3"
+    local body="$4"
+    local existing_id
+    local response
+    local id
+    local lookup_status
+
+    if existing_id="$(lookup_id "${resource}" "${name}")"; then
+        log "Reusing ${label}: ${name}"
+        printf '%s\n' "${existing_id}"
+        return 0
+    else
+        lookup_status=$?
+    fi
+    if ((lookup_status != 1)); then
+        fail "could not look up ${label} ${name}"
+    fi
+
+    response="$(api_create "${resource}" "${body}")" || fail "could not create ${label} ${name}"
+    id="$(jq -er '.id' <<<"${response}")" || fail "private API did not return an id for ${label} ${name}"
+    log "Created ${label}: ${name}"
+    printf '%s\n' "${id}"
+}
+
+log "Seeding the MCP demo catalog in namespace ${NS}..."
+
+host_type_body="$(jq -n --arg name "${HOST_TYPE_NAME}" '{metadata: {name: $name}, title: "MCP demo host type"}')"
+host_type_id="$(ensure_resource host_types 'host type' "${HOST_TYPE_NAME}" "${host_type_body}")"
+
+template_body="$(jq -n \
+    --arg name "${TEMPLATE_NAME}" \
+    --arg host_type_id "${host_type_id}" \
+    '{metadata: {name: $name}, title: "MCP demo cluster template", node_sets: {workers: {host_type: {id: $host_type_id}, size: 3}}}')"
+template_id="$(ensure_resource cluster_templates 'cluster template' "${TEMPLATE_NAME}" "${template_body}")"
+
+catalog_item_body="$(jq -n \
+    --arg name "${CATALOG_ITEM_NAME}" \
+    --arg template_id "${template_id}" \
+    '{metadata: {name: $name}, title: "MCP demo cluster", description: "Seeded cluster offering for the OSAC Deployment MCP PoC.", template: {id: $template_id}, published: true}')"
+catalog_item_id="$(ensure_resource cluster_catalog_items 'catalog item' "${CATALOG_ITEM_NAME}" "${catalog_item_body}")"
+
+log "MCP demo catalog is ready (catalog item id: ${catalog_item_id})."

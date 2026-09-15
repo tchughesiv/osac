@@ -7,15 +7,12 @@ per-user attribution. Three paths, depending on what you already have.
 All paths below are relative to the root of this `osac` clone — cd back to that root between steps
 (none of the commands chain a `cd` from one step into the next).
 
-**Status: derived from reading the source/Helm charts/CI workflow, not personally exercised against
-a live cluster in this session** — this sandbox's local podman/kind networking (`gvproxy`) is broken
-(see the chat for the diagnosis), so none of this was run live here. The `mcp-server` flags, hosts
-file entries, and CA-bundle extraction are all confirmed by cross-referencing existing code
-(`it_tool.go`, `integration-tests.yml`, the Helm values files) rather than guessed. Known residual
-risk, by option:
+**Status: chart rendering and the catalog seeder are contract-tested; an end-to-end Kind browser
+OAuth run remains a manual verification.** `install-mcp-demo` builds the fulfillment-service image
+from this checkout, loads it into Kind, and deploys its MCP-server command. Known residual risk, by option:
 
-- **Option A, step 4**: the catalog-item-seeding `grpcurl` payloads — field names read straight off
-  the `.proto` files, but no live server has validated them.
+- **Option A**: Kind's self-signed CA must be explicitly trusted by the local MCP client; a native
+  IDE client may need the CA installed in the operating system trust store.
 - **Option C, steps 1-2 (shared RHBK path)**: the external-Keycloak Helm rendering and lint checks
   pass, and Phase 1 was installed successfully on a shared OpenShift/RHBK cluster. It deliberately
   creates an isolated OSAC realm and never adopts an existing Keycloak namespace, custom resource,
@@ -31,9 +28,10 @@ Ping back with the actual error if any of these don't match what you see.
 
 ## Option A: Fresh kind cluster (self-contained)
 
-No AAP license or pull secret needed — `PLATFORM=kind` disables AAP entirely, so this is the fastest
-self-serve path, at the cost of one extra manual step (4) that a real AAP-backed cluster (Option B
-or C) doesn't need.
+No AAP license or pull secret is needed — `PLATFORM=kind` disables AAP entirely. The
+`install-mcp-demo` target installs the normal Kind `dev` control plane, builds and deploys an MCP
+endpoint from this checkout's fulfillment-service image, and seeds the one catalog chain this
+Cluster-focused PoC needs.
 
 ### macOS: use `PROFILE=dev`, not `PROFILE=dev-full`
 
@@ -58,10 +56,12 @@ export KIND_EXPERIMENTAL_PROVIDER=podman
 export CONTAINER_TOOL=podman       # required when running `make test`
 ```
 
-`PROFILE=dev` supplies the control plane the PoC needs. It deliberately does
-not seed a Cluster catalog item or provide a real HostedCluster backend, so
-step 4 below remains necessary and a created Cluster proves API/authentication
-and attribution—not a usable OpenShift cluster for application deployment.
+`PROFILE=dev` supplies the control plane the PoC needs. The dedicated target
+builds and loads the branch's fulfillment-service image, then adds an
+in-cluster MCP endpoint and a HostType → ClusterTemplate → published
+ClusterCatalogItem fixture. It does not provide a real HostedCluster backend,
+so a created Cluster proves catalog selection, API authentication, and
+attribution—not a usable OpenShift cluster for application deployment.
 
 ### 1. Boot infra + OSAC
 
@@ -70,100 +70,60 @@ exists here:
 
 ```bash
 cd osac-installer
-make install-infra PLATFORM=kind PROFILE=dev NS=osac
+make install-mcp-demo PLATFORM=kind PROFILE=dev NS=osac
+export KUBECONFIG="$HOME/.kube/osac-dev-kind.kubeconfig"
+kubectl get pods -n osac
 ```
 
-Then point your host at the cluster's internal service names (mirrors exactly what
-`.github/workflows/integration-tests.yml` does for its own kind-based IT runs):
+`install-mcp-demo` uses a short-lived `admin` ServiceAccount token, a temporary
+local port-forward, and the `ca-bundle` ConfigMap to seed the fixture through
+the private API. It verifies TLS and is safe to rerun: an existing fixture is
+reused by name. To add the fixture to an already-installed Kind `dev` control
+plane without reinstalling it, run:
 
 ```bash
-echo '127.0.0.1 fulfillment-api.osac.svc.cluster.local' | sudo tee -a /etc/hosts
-echo '127.0.0.1 fulfillment-internal-api.osac.svc.cluster.local' | sudo tee -a /etc/hosts
+make seed-mcp-demo-catalog PLATFORM=kind PROFILE=dev NS=osac
+```
+
+Then point your host at the MCP endpoint and Keycloak through Kind's Envoy Gateway:
+
+```bash
+echo '127.0.0.1 mcp.osac.svc.cluster.local' | sudo tee -a /etc/hosts
 echo '127.0.0.1 keycloak.keycloak.svc.cluster.local' | sudo tee -a /etc/hosts
 ```
 
 (kind's `extraPortMappings` in `kind-config.yaml` map host port 8443 → Envoy Gateway's HTTPS NodePort;
 Envoy Gateway then routes by Host header/SNI to the right in-cluster service.)
 
-```bash
-make install-osac PLATFORM=kind PROFILE=dev NS=osac
-export KUBECONFIG="$HOME/.kube/osac-dev-kind.kubeconfig"
-kubectl get pods -n osac   # wait for everything Running before continuing
-```
-
 ### 2. Trust the cluster's CA
 
-Both `mcp-server` and `mcp-oauth-demo-client` need to trust the cluster's cert-manager-issued CA
-(self-signed, aggregated by `trust-manager` into a ConfigMap):
+The in-cluster MCP server reads the namespace CA bundle automatically. The local
+`mcp-oauth-demo-client` needs the same cert-manager-issued CA (self-signed and aggregated by
+`trust-manager` into a ConfigMap):
 
 ```bash
 mkdir -p /tmp/osac-ca
-kubectl get configmap ca-bundle -n osac -o json \
-  | python3 -c "import json,sys; [print(v) for v in json.load(sys.stdin)['data'].values()]" \
+kubectl get configmap ca-bundle -n osac -o jsonpath='{.data.bundle\.pem}' \
   > /tmp/osac-ca/ca-bundle.pem
 ```
 
-### 3. Get an admin token
+### 3. Confirm the in-cluster MCP server is ready
 
-Used only for seeding fixtures (step 5) — the `fulfillment-service` Helm subchart creates an `admin`
-ServiceAccount that's on the server's `emergencyServiceAccounts` trust list (Kubernetes-issued tokens
-validated directly, no Keycloak round-trip):
-
-```bash
-TOKEN=$(kubectl create token admin -n osac --duration=1h)
-```
-
-### 4. (Skip if you already have a published `ClusterCatalogItem`)
-
-`PLATFORM=kind` disables AAP and the `osac-publish-templates` hook, so a fresh kind cluster has no
-catalog items to demo against. Seed one minimal `HostType` → `ClusterTemplate` → published
-`ClusterCatalogItem` via the private API (gRPC reflection is on, so `grpcurl` needs no `.proto`
-files):
+The server calls the internal fulfillment API directly and forwards each browser user's bearer token
+to preserve attribution:
 
 ```bash
-HT_ID=$(uuidgen); TMPL_ID=$(uuidgen); CI_ID=$(uuidgen)
-
-grpcurl -cacert /tmp/osac-ca/ca-bundle.pem -H "Authorization: Bearer $TOKEN" \
-  -d "{\"object\":{\"id\":\"$HT_ID\",\"metadata\":{\"name\":\"mcp-demo-host-type\"},\"title\":\"MCP demo host type\"}}" \
-  fulfillment-internal-api.osac.svc.cluster.local:8443 osac.private.v1.HostTypes/Create
-
-grpcurl -cacert /tmp/osac-ca/ca-bundle.pem -H "Authorization: Bearer $TOKEN" \
-  -d "{\"object\":{\"id\":\"$TMPL_ID\",\"metadata\":{\"name\":\"mcp-demo-template\"},\"title\":\"MCP demo template\",\"nodeSets\":{\"workers\":{\"hostType\":{\"id\":\"$HT_ID\"},\"size\":3}}}}" \
-  fulfillment-internal-api.osac.svc.cluster.local:8443 osac.private.v1.ClusterTemplates/Create
-
-grpcurl -cacert /tmp/osac-ca/ca-bundle.pem -H "Authorization: Bearer $TOKEN" \
-  -d "{\"object\":{\"id\":\"$CI_ID\",\"metadata\":{\"name\":\"mcp-demo-catalog-item\"},\"title\":\"MCP demo catalog item\",\"description\":\"Seeded for the OSAC Deployment MCP PoC demo.\",\"template\":{\"id\":\"$TMPL_ID\"},\"published\":true}}" \
-  fulfillment-internal-api.osac.svc.cluster.local:8443 osac.private.v1.ClusterCatalogItems/Create
+kubectl rollout status deployment/fulfillment-mcp-server -n osac --timeout=5m
 ```
 
-### 5. Build and run `mcp-server` locally
-
-It runs as a plain local process — no in-cluster deployment needed, since it just talks to the
-already-deployed public gRPC API like any external client would:
-
-```bash
-cd fulfillment-service
-go build -o /tmp/fulfillment-service ./cmd/fulfillment-service
-
-/tmp/fulfillment-service start mcp-server \
-  --grpc-server-address fulfillment-api.osac.svc.cluster.local:8443 \
-  --ca-file /tmp/osac-ca/ca-bundle.pem \
-  --http-listener-address localhost:8001 \
-  --grpc-authn-trusted-token-issuers https://keycloak.keycloak.svc.cluster.local:8443/realms/osac \
-  --oauth-authorization-server https://keycloak.keycloak.svc.cluster.local:8443/realms/osac \
-  --oauth-resource-url http://localhost:8001
-```
-
-Leave this running in its own terminal.
-
-### 6. Build and run the reference OAuth demo client
+### 4. Build and run the reference OAuth demo client
 
 New terminal:
 
 ```bash
 cd tools/mcp-oauth-demo-client
 GOWORK=off go run . \
-  -server-url http://localhost:8001 \
+  -server-url https://mcp.osac.svc.cluster.local:8443 \
   -issuer https://keycloak.keycloak.svc.cluster.local:8443/realms/osac \
   -ca-file /tmp/osac-ca/ca-bundle.pem
 ```
@@ -176,9 +136,10 @@ result. The cluster it creates will likely sit in a pending/error state since AA
 kind — that's expected; the point of this demo is the OAuth handshake and attribution, not a
 successful provision.
 
-### 7. (Optional) Point a real IDE at it directly
+### 5. (Optional) Point a real IDE at it directly
 
-To test the "zero custom client code needed" claim, add `http://localhost:8001` as a remote MCP
+To test the "zero custom client code needed" claim, add
+`https://mcp.osac.svc.cluster.local:8443` as a remote MCP
 server in Cursor's or Claude Desktop's MCP settings and see whether it drives its own native login,
 no demo client involved. This will likely hit the same self-signed-CA trust problem the demo client's
 `-ca-file` flag works around — the IDE has no equivalent flag, so this only works cleanly if
@@ -188,8 +149,7 @@ goal, not required to prove the core claim.
 ## Option B: Existing cluster-tool VMaaS/CaaS cluster
 
 If you already have a cluster-tool-booted dev cluster, this is simpler — AAP is real there, so catalog
-items are already published (skip step 4/5 above entirely), and hostnames are real OpenShift Routes
-(no `/etc/hosts` hack needed).
+items are already published and hostnames are real OpenShift Routes (no `/etc/hosts` hack needed).
 
 The one thing that cluster's Keycloak realm won't have yet, if it was booted from a flavor snapshot
 that predates this branch, is the `osac-mcp-client` entry. Registering just that one client is much
@@ -221,10 +181,9 @@ print(json.dumps({
 `osac-installer/charts/osac-infra/files/realm.json` if you'd rather import it through the Keycloak
 admin console UI.)
 
-Then run `mcp-server` and the demo client exactly as in Option A steps 5-6, but pointed at your real
-cluster's Route hostnames instead of the `*.svc.cluster.local` kind names, and without `--ca-file` /
-`-ca-file` at all if that cluster's ingress cert is issued by a CA your host already trusts (e.g. a
-real Let's Encrypt cert, unlike kind's self-signed one).
+Then follow Option C's local-server/client steps, but point them at your real cluster's Route
+hostnames rather than the Kind names. Omit `--ca-file` / `-ca-file` when the ingress certificate is
+already trusted by your host (for example, a Let's Encrypt certificate).
 
 ## Option C: Existing OpenShift cluster with shared RHBK (`PLATFORM=openshift`)
 

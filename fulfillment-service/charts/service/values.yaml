@@ -45,6 +45,16 @@ externalHostname:
 # additional layer of defense.
 internalHostname:
 
+# MCP server configuration. Disabled by default because the MCP endpoint is an
+# opt-in integration endpoint, not part of the regular fulfillment API.
+mcp:
+  enabled: false
+  # DNS hostname advertised to MCP clients and included in the server certificate.
+  externalHostname: ""
+  # External TLS port. Kind maps the gateway's TLS listener to 8443; OpenShift
+  # routes normally use 443.
+  externalPort: 443
+
 # Authentication and authorization configuration:
 auth:
 

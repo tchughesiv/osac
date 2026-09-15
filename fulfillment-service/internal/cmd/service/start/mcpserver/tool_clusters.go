@@ -19,8 +19,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	publicv1 "github.com/osac-project/osac/fulfillment-service/internal/api/osac/public/v1"
 	"github.com/osac-project/osac/fulfillment-service/internal/cmd/cli/create/fieldutil"
+	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
 )
 
 // CreateClusterFromCatalogItemInput is the input for the create_cluster_from_catalog_item tool.

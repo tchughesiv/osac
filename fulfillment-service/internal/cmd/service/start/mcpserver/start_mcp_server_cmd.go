@@ -30,12 +30,12 @@ import (
 	"github.com/spf13/pflag"
 	"google.golang.org/grpc/metadata"
 
-	publicv1 "github.com/osac-project/osac/fulfillment-service/internal/api/osac/public/v1"
 	"github.com/osac-project/osac/fulfillment-service/internal/auth"
 	"github.com/osac-project/osac/fulfillment-service/internal/logging"
 	"github.com/osac-project/osac/fulfillment-service/internal/network"
 	shtdwn "github.com/osac-project/osac/fulfillment-service/internal/shutdown"
 	"github.com/osac-project/osac/fulfillment-service/internal/version"
+	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
 )
 
 // Cmd creates and returns the `start mcp-server` command.

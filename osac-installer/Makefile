@@ -11,6 +11,8 @@
 #   make install-osac    PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
 #   make uninstall-osac  PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
 #   make uninstall-infra PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
+#   make install-mcp-demo PLATFORM=kind  PROFILE=dev  NS=osac
+#   make seed-mcp-demo-catalog PLATFORM=kind  PROFILE=dev  NS=osac
 #   make test            PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac  SUITE=all|fulfillment|operator|bmf
 #
 # PROFILE=dev-full (kind only) is a superset of dev: it runs the same chart-based
@@ -34,11 +36,18 @@ EXTRA_HELM_ARGS ?=
 # -- Fail-fast parameter validation ------------------------------------
 # Guards fire at parse time, gated by MAKECMDGOALS so `make help` works.
 
-ALL_TARGETS := install uninstall install-infra uninstall-infra install-osac uninstall-osac install-devstack test
+ALL_TARGETS := install uninstall install-infra uninstall-infra install-osac uninstall-osac install-devstack install-mcp-demo seed-mcp-demo-catalog test
 
 ifneq ($(filter $(ALL_TARGETS),$(MAKECMDGOALS)),)
 ifndef PLATFORM
 $(error PLATFORM is required (kind|openshift))
+endif
+
+MCP_DEMO_TARGETS := install-mcp-demo seed-mcp-demo-catalog
+ifneq ($(filter $(MCP_DEMO_TARGETS),$(MAKECMDGOALS)),)
+ifneq ($(PLATFORM)/$(PROFILE),kind/dev)
+$(error $(MCP_DEMO_TARGETS) require PLATFORM=kind PROFILE=dev)
+endif
 endif
 ifeq ($(filter $(PLATFORM),kind openshift),)
 $(error PLATFORM=$(PLATFORM) is invalid; must be kind or openshift)
@@ -99,10 +108,12 @@ endif
 # provider selection aligned.
 KIND_RUNTIME := scripts/dev-full/kind-runtime.sh
 KIND_ARM64_CLI_IMAGE := quay.io/openshift/origin-cli:4.20.0
+MCP_DEMO_IMAGE ?= localhost/fulfillment-service:mcp-demo
 
 # quay.io/openshift/origin-cli:4.20.0 has no arm64 manifest. On Apple Silicon,
 # build a compatible local image with the same tag so every chart can continue
 # using the shared cliImage value without platform-specific values files.
+HOST_IS_MAC := $(shell if [ "$$(uname -s)" = "Darwin" ]; then echo true; fi)
 HOST_IS_MAC_ARM := $(shell if [ "$$(uname -s)" = "Darwin" ] && { [ "$$(uname -m)" = "arm64" ] || [ "$$(sysctl -in hw.optional.arm64 2>/dev/null)" = "1" ]; }; then echo true; fi)
 KIND_ARM64_CLI_IMAGE_SCRIPT := scripts/dev-full/build-arm64-cli-image.sh
 
@@ -133,6 +144,27 @@ define kind-load-image
 		rm -f "$$tmpfile"; \
 	else \
 		$(KIND_RUNTIME) load docker-image $(1) --name $(KIND_CLUSTER_NAME); \
+	fi
+endef
+
+# Podman on macOS runs inside a VM. Stream exactly the files copied by the
+# fulfillment-service Containerfile into that VM so buildah sees a Linux build
+# context rather than a host path.
+define kind-build-fulfillment-service-image
+	@if [ "$(HOST_IS_MAC)" = "true" ] && [ "$$(basename $(CONTAINER_TOOL))" = "podman" ]; then \
+		tar -C .. -cf - \
+			go.work \
+			proto \
+			fulfillment-service \
+			bare-metal-fulfillment-operator \
+			osac-operator/go.mod osac-operator/go.sum osac-operator/api \
+			osac-csi-driver/go.mod osac-csi-driver/go.sum \
+			osac-metering/schema/go.mod osac-metering/schema/go.sum \
+			osac-metering/metering-service/go.mod osac-metering/metering-service/go.sum \
+			osac-metering/adapters/go.mod osac-metering/adapters/go.sum | \
+		$(CONTAINER_TOOL) machine ssh -- podman build -t $(1) -f fulfillment-service/Containerfile -; \
+	else \
+		$(CONTAINER_TOOL) build -t $(1) -f ../fulfillment-service/Containerfile ..; \
 	fi
 endef
 
@@ -292,6 +324,20 @@ else
 install: install-infra install-osac ## Full install: infra + osac (PLATFORM= PROFILE= required)
 endif
 
+.PHONY: install-mcp-demo
+install-mcp-demo: ## Install Kind dev OSAC, its MCP server, and the Cluster catalog item for the MCP PoC
+	$(MAKE) install-infra PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
+		DEPS_HELM_ARGS="" INFRA_HELM_ARGS=""
+	$(call kind-build-fulfillment-service-image,$(MCP_DEMO_IMAGE))
+	$(call kind-load-image,$(MCP_DEMO_IMAGE))
+	$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
+		EXTRA_HELM_ARGS="--set service.mcp.enabled=true --set-string service.mcp.externalHostname=mcp.$(NS).svc.cluster.local --set service.mcp.externalPort=8443 --set service.images.service=$(MCP_DEMO_IMAGE) --set service.images.pullPolicy=Never"
+	$(MAKE) seed-mcp-demo-catalog PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS)
+
+.PHONY: seed-mcp-demo-catalog
+seed-mcp-demo-catalog: ## Seed the Kind dev Cluster catalog item required by the MCP PoC
+	./scripts/seed-mcp-demo-catalog.sh $(NS)
+
 .PHONY: uninstall
 uninstall: uninstall-osac uninstall-infra ## Full uninstall: osac + infra (PLATFORM= PROFILE= required)
 
@@ -305,7 +351,7 @@ ifeq ($(SUITE),all)
 	$(MAKE) test SUITE=bmf
 endif
 ifeq ($(SUITE),fulfillment)
-	$(CONTAINER_TOOL) build -t localhost/fulfillment-service:it -f ../fulfillment-service/Containerfile ..
+	$(call kind-build-fulfillment-service-image,localhost/fulfillment-service:it)
 	$(call kind-load-image,localhost/fulfillment-service:it)
 	$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
 		EXTRA_HELM_ARGS="--set service.images.service=localhost/fulfillment-service:it --set operator.enabled=false --set networkClass.enabled=false"
@@ -367,4 +413,5 @@ helm-validate: helm-lint ## Validate all charts (lint + template)
 	./scripts/validate-keycloak-credentials.sh
 	./scripts/validate-external-keycloak.sh
 	./scripts/validate-cnv-hook.sh
+	./scripts/validate-mcp-demo-catalog.sh
 	@echo "Validation passed."

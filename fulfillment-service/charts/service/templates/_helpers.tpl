@@ -40,6 +40,14 @@ Return the hostname for the fulfillment internal API. Fails if 'internalHostname
 {{- end -}}
 
 {{/*
+Return the external hostname for the MCP server. This is required only when
+the opt-in MCP workload is enabled.
+*/}}
+{{- define "fulfillment-mcp-server.hostname" -}}
+{{- required "mcp.externalHostname is required when mcp.enabled=true" .Values.mcp.externalHostname -}}
+{{- end -}}
+
+{{/*
 Check if a service tier is enabled via global.services.<key>.enabled.
 Args: list of [context, serviceKey]
 Falls back to true when global.services is not set.

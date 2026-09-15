@@ -153,6 +153,31 @@ make install-osac  PLATFORM=openshift PROFILE=<profile> NS=<namespace>   # OSAC 
 | `INFRA_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac-infra` release |
 | `EXTRA_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac` application release |
 
+#### Deployment MCP PoC (`PROFILE=dev`, kind only)
+
+The Cluster-focused Deployment MCP PoC needs one published Cluster catalog
+item and an MCP endpoint. On Kind, AAP is deliberately disabled, so use the
+dedicated target to install the `dev` control plane, build and load the
+checkout's fulfillment-service image with the MCP server, and seed that fixture
+safely:
+
+```bash
+make install-mcp-demo PLATFORM=kind PROFILE=dev NS=osac
+```
+
+The target uses a short-lived `admin` ServiceAccount token and a temporary
+port-forward to seed `HostType` → `ClusterTemplate` → `ClusterCatalogItem`
+through the private API, with TLS verified using the namespace's `ca-bundle`.
+It reuses existing fixture names on rerun. For an existing Kind `dev` install,
+run only `make seed-mcp-demo-catalog PLATFORM=kind PROFILE=dev NS=osac`.
+
+This is an API/authentication/attribution demo: Kind `dev` has no AAP or
+HostedCluster provisioning backend, so the Cluster it creates is not a usable
+OpenShift cluster for application deployment. The reference OAuth client stays
+local; it connects to the deployed MCP endpoint over Kind's TLS gateway. See
+[`../tools/mcp-oauth-demo-client/RUNBOOK.md`](../tools/mcp-oauth-demo-client/RUNBOOK.md)
+for the local client, CA-trust, and host-mapping steps.
+
 #### Full local dev environment (`PROFILE=dev-full`, kind only)
 
 `PROFILE=dev` on kind stands up only the control plane (cert-manager,
