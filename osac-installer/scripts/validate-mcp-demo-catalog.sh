@@ -62,8 +62,12 @@ printf '%s\n' \
     'case "${url}" in' \
     '  */host_types)' \
     '    if [[ "${method}" == "POST" ]]; then printf "{\\\"id\\\":\\\"host-type-id\\\"}\\n"; elif [[ "${CURL_MODE}" == "existing" ]]; then printf "{\\\"items\\\":[{\\\"id\\\":\\\"host-type-id\\\",\\\"metadata\\\":{\\\"name\\\":\\\"mcp-demo-host-type\\\"}}]}\\n"; else printf "{\\\"items\\\":[]}\\n"; fi ;;' \
+    '  */cluster_versions)' \
+    '    if [[ "${method}" == "POST" ]]; then printf "{\\\"id\\\":\\\"cluster-version-id\\\"}\\n"; elif [[ "${CURL_MODE}" == "existing" ]]; then printf "{\\\"items\\\":[{\\\"id\\\":\\\"cluster-version-id\\\",\\\"metadata\\\":{\\\"name\\\":\\\"mcp-demo-cluster-version\\\"}}]}\\n"; else printf "{\\\"items\\\":[]}\\n"; fi ;;' \
     '  */cluster_templates)' \
     '    if [[ "${method}" == "POST" ]]; then printf "{\\\"id\\\":\\\"template-id\\\"}\\n"; elif [[ "${CURL_MODE}" == "existing" ]]; then printf "{\\\"items\\\":[{\\\"id\\\":\\\"template-id\\\",\\\"metadata\\\":{\\\"name\\\":\\\"mcp-demo-template\\\"}}]}\\n"; else printf "{\\\"items\\\":[]}\\n"; fi ;;' \
+    '  */cluster_templates/template-id)' \
+    '    [[ "${method}" == "PATCH" ]] || { printf "expected PATCH for existing cluster template\\n" >&2; exit 1; }; printf "{\\\"id\\\":\\\"template-id\\\"}\\n" ;;' \
     '  */cluster_catalog_items)' \
     '    if [[ "${method}" == "POST" ]]; then printf "{\\\"id\\\":\\\"catalog-item-id\\\"}\\n"; elif [[ "${CURL_MODE}" == "existing" ]]; then printf "{\\\"items\\\":[{\\\"id\\\":\\\"catalog-item-id\\\",\\\"metadata\\\":{\\\"name\\\":\\\"mcp-demo-cluster\\\"}}]}\\n"; else printf "{\\\"items\\\":[]}\\n"; fi ;;' \
     '  *) printf "unexpected curl URL: %s\\n" "${url}" >&2; exit 1 ;;' \
@@ -82,13 +86,13 @@ run_seed() {
 
 run_seed missing
 
-for resource in host_types cluster_templates cluster_catalog_items; do
+for resource in host_types cluster_versions cluster_templates cluster_catalog_items; do
     rg -F "/api/private/v1/${resource}" "${request_log}" >/dev/null || \
         fail "seeder did not call the ${resource} private API"
 done
 
 post_count="$(rg -c -- '-X POST' "${request_log}")"
-[[ "${post_count}" == "3" ]] || fail "expected three create requests, got ${post_count}"
+[[ "${post_count}" == "4" ]] || fail "expected four create requests, got ${post_count}"
 rg -F -- '--cacert ' "${request_log}" >/dev/null || fail "seeder must verify the service certificate with the CA bundle"
 rg -F 'Content-Type:' "${request_log}" >/dev/null || fail "seeder must send catalog fixtures as JSON"
 rg -F -- '--resolve fulfillment-internal-api.mcp-demo.svc.cluster.local:18444:127.0.0.1' "${request_log}" >/dev/null || \
@@ -98,11 +102,23 @@ if rg -e '(^| )-k( |$)|--insecure' "${request_log}" >/dev/null; then
 fi
 rg -F 'Created catalog item: mcp-demo-cluster' "${tmp_dir}/missing.out" >/dev/null || \
     fail "seeder did not report the created catalog item"
+rg -F 'mcp-demo-cluster-version' "${request_log}" >/dev/null || \
+    fail "seeder did not create the MCP demo cluster version"
+rg -F 'quay.io/openshift-release-dev/ocp-release:4.20.0-multi' "${request_log}" >/dev/null || \
+    fail "seeder did not set the MCP demo release image"
+rg -F 'spec_defaults' "${request_log}" >/dev/null || \
+    fail "seeder did not set the template cluster-version default"
 
 run_seed existing
 if rg -F -- '-X POST' "${request_log}" >/dev/null; then
     fail "seeder must reuse fixtures found by name instead of recreating them"
 fi
+rg -F -- '-X PATCH' "${request_log}" >/dev/null || \
+    fail "seeder must reconcile the existing cluster template"
+rg -F 'api_update cluster_templates "${existing_id}" "${update_body}" >/dev/null' "${SEED_SCRIPT}" >/dev/null || \
+    fail "template reconciliation must not mix the API response with the template identifier"
+rg -F 'Reconciled cluster template: mcp-demo-template' "${tmp_dir}/existing.out" >/dev/null || \
+    fail "seeder did not report template reconciliation"
 rg -F 'Reusing catalog item: mcp-demo-cluster' "${tmp_dir}/existing.out" >/dev/null || \
     fail "seeder did not report reuse of the existing catalog item"
 

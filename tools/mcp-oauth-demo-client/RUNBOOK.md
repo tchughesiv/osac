@@ -58,10 +58,12 @@ export CONTAINER_TOOL=podman       # required when running `make test`
 
 `PROFILE=dev` supplies the control plane the PoC needs. The dedicated target
 builds and loads the branch's fulfillment-service image, then adds an
-in-cluster MCP endpoint and a HostType → ClusterTemplate → published
-ClusterCatalogItem fixture. It does not provide a real HostedCluster backend,
-so a created Cluster proves catalog selection, API authentication, and
-attribution—not a usable OpenShift cluster for application deployment.
+in-cluster MCP endpoint and a ClusterVersion → HostType → ClusterTemplate →
+published ClusterCatalogItem fixture. The template includes an explicit
+cluster-version default, so the demo does not depend on a system-wide default
+version. It does not provide a real HostedCluster backend, so a created Cluster
+proves catalog selection, API authentication, and attribution—not a usable
+OpenShift cluster for application deployment.
 
 ### 1. Boot infra + OSAC
 
@@ -88,9 +90,10 @@ DEPS_HELM_ARGS='' INFRA_HELM_ARGS='' \
 
 `install-mcp-demo` uses a short-lived `admin` ServiceAccount token, a temporary
 local port-forward, and the `ca-bundle` ConfigMap to seed the fixture through
-the private API. It verifies TLS and is safe to rerun: an existing fixture is
-reused by name. To add the fixture to an already-installed Kind `dev` control
-plane without reinstalling it, run:
+the private API. It verifies TLS and is safe to rerun: existing fixtures are
+reused by name and the template's version default is reconciled. To add or
+repair the fixture on an already-installed Kind `dev` control plane without
+reinstalling it, run:
 
 ```bash
 make seed-mcp-demo-catalog PLATFORM=kind PROFILE=dev NS=osac

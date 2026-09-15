@@ -10,6 +10,9 @@ LOCAL_PORT="${LOCAL_PORT:-8444}"
 API_HOST="fulfillment-internal-api.${NS}.svc.cluster.local"
 API_URL="https://${API_HOST}:${LOCAL_PORT}/api/private/v1"
 HOST_TYPE_NAME="mcp-demo-host-type"
+CLUSTER_VERSION_NAME="mcp-demo-cluster-version"
+CLUSTER_VERSION="4.20.0"
+CLUSTER_RELEASE_IMAGE="quay.io/openshift-release-dev/ocp-release:4.20.0-multi"
 TEMPLATE_NAME="mcp-demo-template"
 CATALOG_ITEM_NAME="mcp-demo-cluster"
 
@@ -68,7 +71,7 @@ api_list_with_retry() {
     local attempt
 
     for attempt in $(seq 1 30); do
-        if response="$(api_list "${resource}")"; then
+        if response="$(api_list "${resource}" 2>/dev/null)"; then
             printf '%s\n' "${response}"
             return 0
         fi
@@ -92,6 +95,21 @@ api_create() {
         -X POST \
         --data "${body}" \
         "${API_URL}/${resource}"
+}
+
+api_update() {
+    local resource="$1"
+    local id="$2"
+    local body="$3"
+
+    curl --fail --silent --show-error \
+        --cacert "${ca_file}" \
+        --resolve "${API_HOST}:${LOCAL_PORT}:127.0.0.1" \
+        --header "Authorization: Bearer ${admin_token}" \
+        --header "Content-Type: application/json" \
+        -X PATCH \
+        --data "${body}" \
+        "${API_URL}/${resource}/${id}"
 }
 
 lookup_id() {
@@ -139,16 +157,55 @@ ensure_resource() {
     printf '%s\n' "${id}"
 }
 
+ensure_cluster_template() {
+    local body="$1"
+    local existing_id
+    local response
+    local id
+    local lookup_status
+    local update_body
+
+    if existing_id="$(lookup_id cluster_templates "${TEMPLATE_NAME}")"; then
+        update_body="$(jq --arg id "${existing_id}" '. + {id: $id}' <<<"${body}")" || \
+            fail "could not prepare cluster template ${TEMPLATE_NAME} for update"
+        api_update cluster_templates "${existing_id}" "${update_body}" >/dev/null || \
+            fail "could not update cluster template ${TEMPLATE_NAME}"
+        log "Reconciled cluster template: ${TEMPLATE_NAME}"
+        printf '%s\n' "${existing_id}"
+        return 0
+    else
+        lookup_status=$?
+    fi
+    if ((lookup_status != 1)); then
+        fail "could not look up cluster template ${TEMPLATE_NAME}"
+    fi
+
+    response="$(api_create cluster_templates "${body}")" || \
+        fail "could not create cluster template ${TEMPLATE_NAME}"
+    id="$(jq -er '.id' <<<"${response}")" || \
+        fail "private API did not return an id for cluster template ${TEMPLATE_NAME}"
+    log "Created cluster template: ${TEMPLATE_NAME}"
+    printf '%s\n' "${id}"
+}
+
 log "Seeding the MCP demo catalog in namespace ${NS}..."
 
 host_type_body="$(jq -n --arg name "${HOST_TYPE_NAME}" '{metadata: {name: $name}, title: "MCP demo host type"}')"
 host_type_id="$(ensure_resource host_types 'host type' "${HOST_TYPE_NAME}" "${host_type_body}")"
 
+cluster_version_body="$(jq -n \
+    --arg name "${CLUSTER_VERSION_NAME}" \
+    --arg version "${CLUSTER_VERSION}" \
+    --arg image "${CLUSTER_RELEASE_IMAGE}" \
+    '{metadata: {name: $name}, spec: {version: $version, image: $image, enabled: true, state: "CLUSTER_VERSION_STATE_ACTIVE"}}')"
+ensure_resource cluster_versions 'cluster version' "${CLUSTER_VERSION_NAME}" "${cluster_version_body}" >/dev/null
+
 template_body="$(jq -n \
     --arg name "${TEMPLATE_NAME}" \
     --arg host_type_id "${host_type_id}" \
-    '{metadata: {name: $name}, title: "MCP demo cluster template", node_sets: {workers: {host_type: {id: $host_type_id}, size: 3}}}')"
-template_id="$(ensure_resource cluster_templates 'cluster template' "${TEMPLATE_NAME}" "${template_body}")"
+    --arg cluster_version_name "${CLUSTER_VERSION_NAME}" \
+    '{metadata: {name: $name}, title: "MCP demo cluster template", node_sets: {workers: {host_type: {id: $host_type_id}, size: 3}}, spec_defaults: {version: {name: $cluster_version_name}}}')"
+template_id="$(ensure_cluster_template "${template_body}")"
 
 catalog_item_body="$(jq -n \
     --arg name "${CATALOG_ITEM_NAME}" \

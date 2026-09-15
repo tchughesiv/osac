@@ -201,14 +201,16 @@ make install-mcp-demo PLATFORM=kind PROFILE=dev NS=osac
 
 It creates the standard Kind control plane, builds the fulfillment-service
 image from the checkout, loads it into Kind, and enables its MCP-server command.
-It then uses the private API to safely seed a minimal HostType → ClusterTemplate
-→ published ClusterCatalogItem chain. The seeder uses a short-lived `admin`
-ServiceAccount token, a temporary port-forward, and the namespace's `ca-bundle`;
-it verifies TLS and reuses the fixtures by name when rerun. The reference OAuth
-client remains local and connects through the Kind TLS gateway. This catalog
-fixture supports the four Deployment MCP tools, but Kind `dev` does not provide
-an AAP or HostedCluster backend. A created Cluster therefore demonstrates
-catalog selection, authentication, and attribution only; it is not a deployable
+It then uses the private API to safely seed a minimal ClusterVersion → HostType
+→ ClusterTemplate → published ClusterCatalogItem chain. The template explicitly
+defaults to that version so no system-wide default is needed. The seeder uses a
+short-lived `admin` ServiceAccount token, a temporary port-forward, and the
+namespace's `ca-bundle`; it verifies TLS, reuses named fixtures, and reconciles
+the template version default when rerun. The reference OAuth client remains
+local and connects through the Kind TLS gateway. This catalog fixture supports
+the four Deployment MCP tools, but Kind `dev` does not provide an AAP or
+HostedCluster backend. A created Cluster therefore demonstrates catalog
+selection, authentication, and attribution only; it is not a deployable
 OpenShift cluster. The complete browser-OAuth demo is documented in
 [`../../tools/mcp-oauth-demo-client/RUNBOOK.md`](../../tools/mcp-oauth-demo-client/RUNBOOK.md).
 

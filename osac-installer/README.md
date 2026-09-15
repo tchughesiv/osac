@@ -166,10 +166,11 @@ make install-mcp-demo PLATFORM=kind PROFILE=dev NS=osac
 ```
 
 The target uses a short-lived `admin` ServiceAccount token and a temporary
-port-forward to seed `HostType` → `ClusterTemplate` → `ClusterCatalogItem`
-through the private API, with TLS verified using the namespace's `ca-bundle`.
-It reuses existing fixture names on rerun. For an existing Kind `dev` install,
-run only `make seed-mcp-demo-catalog PLATFORM=kind PROFILE=dev NS=osac`.
+port-forward to seed `ClusterVersion` → `HostType` → `ClusterTemplate` →
+`ClusterCatalogItem` through the private API, with TLS verified using the
+namespace's `ca-bundle`. It reuses existing fixture names and reconciles the
+template version default on rerun. For an existing Kind `dev` install, run only
+`make seed-mcp-demo-catalog PLATFORM=kind PROFILE=dev NS=osac`.
 
 This is an API/authentication/attribution demo: Kind `dev` has no AAP or
 HostedCluster provisioning backend, so the Cluster it creates is not a usable
