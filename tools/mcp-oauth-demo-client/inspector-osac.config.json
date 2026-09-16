@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "osac": {
+      "type": "http",
+      "url": "https://mcp.osac.svc.cluster.local:8443",
+      "oauth": {
+        "clientId": "osac-mcp-client"
+      }
+    }
+  }
+}

@@ -79,6 +79,72 @@ var _ = Describe("Cmd", func() {
 	})
 })
 
+var _ = Describe("newServer", func() {
+	It("publishes portable schemas for slice fields", func() {
+		ctx := context.Background()
+		server := newServer(ServerDeps{})
+		client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "test"}, nil)
+		serverTransport, clientTransport := mcp.NewInMemoryTransports()
+
+		serverSession, err := server.Connect(ctx, serverTransport, nil)
+		Expect(err).ToNot(HaveOccurred())
+		DeferCleanup(func() { Expect(serverSession.Close()).To(Succeed()) })
+
+		clientSession, err := client.Connect(ctx, clientTransport, nil)
+		Expect(err).ToNot(HaveOccurred())
+		DeferCleanup(func() { Expect(clientSession.Close()).To(Succeed()) })
+
+		response, err := clientSession.ListTools(ctx, nil)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(response.Tools).To(HaveLen(4))
+
+		tools := make(map[string]*mcp.Tool, len(response.Tools))
+		for _, tool := range response.Tools {
+			tools[tool.Name] = tool
+			Expect(hasMultiTypeSchema(tool.InputSchema)).To(BeFalse(), tool.Name+" input schema")
+			Expect(hasMultiTypeSchema(tool.OutputSchema)).To(BeFalse(), tool.Name+" output schema")
+		}
+		expectNullableArraySchema(tools["create_cluster_from_catalog_item"].InputSchema, "set")
+		expectNullableArraySchema(tools["list_catalog_items"].OutputSchema, "items")
+		expectNullableArraySchema(tools["get_cluster_status"].OutputSchema, "conditions")
+	})
+})
+
+func hasMultiTypeSchema(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		if _, ok := typed["type"].([]any); ok {
+			return true
+		}
+		for _, child := range typed {
+			if hasMultiTypeSchema(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if hasMultiTypeSchema(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func expectNullableArraySchema(schema any, name string) {
+	document, ok := schema.(map[string]any)
+	Expect(ok).To(BeTrue())
+	properties, ok := document["properties"].(map[string]any)
+	Expect(ok).To(BeTrue())
+	property, ok := properties[name].(map[string]any)
+	Expect(ok).To(BeTrue())
+	Expect(property).ToNot(HaveKey("type"))
+	Expect(property["anyOf"]).To(ConsistOf(
+		map[string]any{"type": "null"},
+		map[string]any{"type": "array"},
+	))
+}
+
 var _ = Describe("newTokenVerifier", func() {
 	var ctrl *gomock.Controller
 

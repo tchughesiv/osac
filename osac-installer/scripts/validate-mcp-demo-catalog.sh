@@ -159,12 +159,18 @@ fi
     fail "install-mcp-demo must seed the catalog after installing OSAC"
 [[ "${output}" == *"CREATE_SUBNET_TARGET_NAMESPACES=false ./scripts/dev-full/provision-tenant.sh mcp-demo"* ]] || \
     fail "install-mcp-demo must provision the MCP demo tenant without VM subnet-target namespaces"
-[[ "${output}" == *"build -t localhost/fulfillment-service:mcp-demo"* ]] || \
+image_refs=()
+while IFS= read -r image_ref; do
+    image_refs+=("${image_ref}")
+done < <(rg -o 'localhost/fulfillment-service:mcp-demo-[0-9]+' <<<"${output}" | sort -u)
+[[ "${#image_refs[@]}" == "1" ]] || \
+    fail "install-mcp-demo must use one fresh MCP demo image tag"
+[[ "${output}" == *"build -t ${image_refs[0]}"* ]] || \
     fail "install-mcp-demo must build the fulfillment-service image from this checkout"
 [[ "${output}" == *"service.mcp.enabled=true"* ]] || \
     fail "install-mcp-demo must enable the MCP server"
-[[ "${output}" == *"service.images.service=localhost/fulfillment-service:mcp-demo"* ]] || \
-    fail "install-mcp-demo must deploy the locally built fulfillment-service image"
+[[ "${output}" == *"service.images.service=${image_refs[0]}"* ]] || \
+    fail "install-mcp-demo must deploy the locally built fulfillment-service image with the same tag"
 if [[ "${output}" == *"unexpected.deps=true"* || "${output}" == *"unexpected.infra=true"* || \
     "${output}" == *"unexpected.osac=true"* ]]; then
     fail "install-mcp-demo must not inherit Helm overrides from another deployment"
@@ -190,6 +196,8 @@ fi
 for expected in \
     'Ensuring Keycloak client ${client_id} is registered...' \
     'https://keycloak:443/admin/realms/osac/clients?clientId=${client_id}' \
+    'http://127.0.0.1:6274/oauth/callback' \
+    'http://localhost:6274/oauth/callback' \
     'mountPath: /realm' \
     'name: keycloak-realm'; do
     rg -F -- "${expected}" <<<"${infra_rendered}" >/dev/null || \
@@ -205,7 +213,9 @@ fi
 
 for expected in \
     'name: fulfillment-mcp-server' \
+    'name: mcp' \
     'app: fulfillment-mcp-server' \
+    'port: 8443' \
     '- mcp-server' \
     '--grpc-server-address=fulfillment-internal-api:8001' \
     '--grpc-authn-trusted-token-issuers=https://keycloak.keycloak.svc.cluster.local:8443/realms/osac' \

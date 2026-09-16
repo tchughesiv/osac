@@ -15,6 +15,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -243,22 +245,77 @@ func newServer(deps ServerDeps) *mcp.Server {
 		Version: version.Get(),
 	}, nil)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "list_catalog_items",
-		Description: "Lists the published cluster catalog items that clusters can be created from.",
+		Name:         "list_catalog_items",
+		Description:  "Lists the published cluster catalog items that clusters can be created from.",
+		InputSchema:  compatibleToolSchema[ListCatalogItemsInput](),
+		OutputSchema: compatibleToolSchema[ListCatalogItemsOutput](),
 	}, handleListCatalogItems(deps.CatalogItemsClient))
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "describe_catalog_item",
-		Description: "Describes a cluster catalog item, including the fields callers may set when creating a cluster from it.",
+		Name:         "describe_catalog_item",
+		Description:  "Describes a cluster catalog item, including the fields callers may set when creating a cluster from it.",
+		InputSchema:  compatibleToolSchema[DescribeCatalogItemInput](),
+		OutputSchema: compatibleToolSchema[DescribeCatalogItemOutput](),
 	}, handleDescribeCatalogItem(deps.CatalogItemsClient))
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "create_cluster_from_catalog_item",
-		Description: "Creates a new cluster from a cluster catalog item.",
+		Name:         "create_cluster_from_catalog_item",
+		Description:  "Creates a new cluster from a cluster catalog item.",
+		InputSchema:  compatibleToolSchema[CreateClusterFromCatalogItemInput](),
+		OutputSchema: compatibleToolSchema[CreateClusterFromCatalogItemOutput](),
 	}, handleCreateClusterFromCatalogItem(deps.ClustersClient))
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "get_cluster_status",
-		Description: "Gets the current status of a cluster.",
+		Name:         "get_cluster_status",
+		Description:  "Gets the current status of a cluster.",
+		InputSchema:  compatibleToolSchema[GetClusterStatusInput](),
+		OutputSchema: compatibleToolSchema[GetClusterStatusOutput](),
 	}, handleGetClusterStatus(deps.ClustersClient))
 	return server
+}
+
+// compatibleToolSchema converts inferred multi-type schemas to anyOf branches.
+// OSAC-4388: several MCP hosts reject JSON Schema's otherwise-valid array form
+// of type, while accepting the equivalent anyOf representation.
+func compatibleToolSchema[T any]() json.RawMessage {
+	schema, err := jsonschema.For[T](nil)
+	if err != nil {
+		panic(fmt.Errorf("infer tool schema: %w", err))
+	}
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		panic(fmt.Errorf("encode tool schema: %w", err))
+	}
+	var document any
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		panic(fmt.Errorf("decode tool schema: %w", err))
+	}
+	normalizeMultiTypeSchemas(document)
+	encoded, err = json.Marshal(document)
+	if err != nil {
+		panic(fmt.Errorf("encode compatible tool schema: %w", err))
+	}
+	return encoded
+}
+
+func normalizeMultiTypeSchemas(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, child := range typed {
+			normalizeMultiTypeSchemas(child)
+		}
+		types, ok := typed["type"].([]any)
+		if !ok || len(types) < 2 {
+			return
+		}
+		branches := make([]any, 0, len(types))
+		for _, typ := range types {
+			branches = append(branches, map[string]any{"type": typ})
+		}
+		delete(typed, "type")
+		typed["anyOf"] = branches
+	case []any:
+		for _, child := range typed {
+			normalizeMultiTypeSchemas(child)
+		}
+	}
 }
 
 // oauthProtectedResourcePath is where the RFC 9728 protected-resource-metadata document is served, when OAuth

@@ -201,6 +201,12 @@ make install-mcp-demo PLATFORM=kind PROFILE=dev NS=osac
 
 It creates the standard Kind control plane, builds the fulfillment-service
 image from the checkout, loads it into Kind, and enables its MCP-server command.
+Each run uses a fresh local image tag, so Helm automatically rolls
+`fulfillment-mcp-server` to the image just loaded into Kind. The workload uses
+`imagePullPolicy: Never`: that is required for a localhost-only Kind image, and
+`Always` would make the node attempt a registry pull instead. Do not manually
+restart the deployment after a successful target run. A caller that overrides
+`MCP_DEMO_IMAGE` must choose a new tag for each iteration.
 It then uses the private API to safely seed a minimal ClusterVersion → HostType
 → ClusterTemplate → published ClusterCatalogItem chain. The template explicitly
 defaults to that version so no system-wide default is needed. The seeder uses a
@@ -218,6 +224,13 @@ created Cluster therefore demonstrates catalog selection, authentication, and
 attribution only; it is not a deployable OpenShift cluster. The complete
 browser-OAuth demo is documented in
 [`../../tools/mcp-oauth-demo-client/RUNBOOK.md`](../../tools/mcp-oauth-demo-client/RUNBOOK.md).
+
+The canonical MCP URL is `https://mcp.<namespace>.svc.cluster.local:8443`.
+Host clients resolve it through Kind's Gateway with a local host entry, and the
+Kind chart also creates an `mcp` Service so an in-cluster MCP client can resolve
+the same URL directly. The seeded public `osac-mcp-client` permits the reference
+client callback plus the Inspector loopback callbacks; see the runbook for
+Inspector's static-client configuration.
 
 Earlier branch revisions seeded an auto-generated template UUID, which cannot
 be used as `ClusterOrder.spec.templateID`. For a clean local reset rather than

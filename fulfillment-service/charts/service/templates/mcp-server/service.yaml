@@ -27,4 +27,24 @@ spec:
   - name: mcp
     port: 8000
     targetPort: mcp
+{{- if eq .Values.variant "kind" }}
+---
+# The Kind gateway exposes this DNS name to host clients. Keep an in-cluster
+# Service at that canonical name so client pods can use the advertised resource
+# URL without a host alias or a trip back through Envoy.
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: mcp
+  labels:
+    app: fulfillment-mcp-server
+spec:
+  selector:
+    app: fulfillment-mcp-server
+  ports:
+  - name: mcp
+    port: {{ .Values.mcp.externalPort }}
+    targetPort: mcp
+{{- end }}
 {{- end }}

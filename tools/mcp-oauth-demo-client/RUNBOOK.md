@@ -9,7 +9,10 @@ All paths below are relative to the root of this `osac` clone — cd back to tha
 
 **Status: chart rendering and the catalog seeder are contract-tested; an end-to-end Kind browser
 OAuth run remains a manual verification.** `install-mcp-demo` builds the fulfillment-service image
-from this checkout, loads it into Kind, and deploys its MCP-server command. Known residual risk, by option:
+from this checkout, loads it into Kind, and deploys its MCP-server command. It uses a fresh image
+tag on each run, which makes Helm roll `fulfillment-mcp-server` automatically; no manual restart is
+needed while iterating. The deployment correctly uses `imagePullPolicy: Never` because the image is
+loaded only into Kind's local store. Known residual risk, by option:
 
 - **Option A**: Kind's self-signed CA must be explicitly trusted by the local MCP client; a native
   IDE client may need the CA installed in the operating system trust store.
@@ -167,7 +170,37 @@ result. The cluster it creates will likely sit in a pending/error state since AA
 kind — that's expected; the point of this demo is the OAuth handshake and attribution, not a
 successful provision.
 
-### 5. (Optional) Point a real IDE at it directly
+### 5. Explore the MCP server with MCP Inspector
+
+MCP Inspector is a local developer UI, not an OSAC workload. Its Node backend
+makes the MCP connection, so give it the same CA bundle used by the reference
+client. Launch the supplied configuration rather than an ad-hoc `--server-url`;
+it provides the pre-registered public client before the first connection:
+
+```bash
+NODE_EXTRA_CA_CERTS=/tmp/osac-ca/ca-bundle.pem \
+  npx --yes @modelcontextprotocol/inspector@2.6.0 \
+    --config tools/mcp-oauth-demo-client/inspector-osac.config.json \
+    --server osac
+```
+
+Open the complete loopback URL printed by Inspector and connect to **osac**.
+The **OAuth Client Metadata Document** field must remain blank: this demo uses a
+static Keycloak client ID, not a client-ID metadata document. The Kind dev realm
+permits both Inspector loopback forms,
+`http://127.0.0.1:6274/oauth/callback` and
+`http://localhost:6274/oauth/callback`, because the actual form depends on the
+URL used to open Inspector. Reconnect, complete the Keycloak login as
+`tenant1_user` / `foobar`, and use Inspector's **Tools** tab to list and call
+the four MCP tools.
+
+For a future in-cluster Inspector or other MCP client, the Kind chart also
+provides `mcp.osac.svc.cluster.local:8443` as an `mcp` Service that selects the
+MCP server pods. It must mount the `ca-bundle` ConfigMap and set
+`NODE_EXTRA_CA_CERTS` to its `bundle.pem`; browser OAuth still needs a
+registered callback and a port-forward or an appropriately secured route.
+
+### 6. (Optional) Point a real IDE at it directly
 
 To test the "zero custom client code needed" claim, add
 `https://mcp.osac.svc.cluster.local:8443` as a remote MCP

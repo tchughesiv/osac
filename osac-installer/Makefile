@@ -108,7 +108,12 @@ endif
 # provider selection aligned.
 KIND_RUNTIME := scripts/dev-full/kind-runtime.sh
 KIND_ARM64_CLI_IMAGE := quay.io/openshift/origin-cli:4.20.0
-MCP_DEMO_IMAGE ?= localhost/fulfillment-service:mcp-demo
+# A fresh local tag means Helm observes an image-field change and rolls the MCP
+# deployment after the image is loaded into Kind.  Do not use pullPolicy=Always
+# here: the Kind node cannot pull this localhost-only image from a registry.
+ifeq ($(strip $(MCP_DEMO_IMAGE)),)
+MCP_DEMO_IMAGE := localhost/fulfillment-service:mcp-demo-$(shell date +%s)
+endif
 
 # quay.io/openshift/origin-cli:4.20.0 has no arm64 manifest. On Apple Silicon,
 # build a compatible local image with the same tag so every chart can continue

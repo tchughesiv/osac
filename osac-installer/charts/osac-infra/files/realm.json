@@ -1062,7 +1062,9 @@
       "alwaysDisplayInConsole": false,
       "clientAuthenticatorType": "client-secret",
       "redirectUris": [
-        "http://localhost:8091/callback"
+        "http://localhost:8091/callback",
+        "http://127.0.0.1:6274/oauth/callback",
+        "http://localhost:6274/oauth/callback"
       ],
       "webOrigins": [],
       "notBefore": 0,

@@ -178,6 +178,14 @@ existing Kind `dev` install, run only
 `make seed-mcp-demo-catalog PLATFORM=kind PROFILE=dev NS=osac`, then start a
 new browser login to obtain an updated token.
 
+Each `install-mcp-demo` run assigns the locally built fulfillment-service image
+a fresh tag, loads that exact image into Kind, and passes the new tag to Helm.
+This automatically rolls `fulfillment-mcp-server`; no manual rollout restart is
+needed when iterating on MCP code. The image uses `imagePullPolicy: Never`
+because it exists only in the Kind node's local image store. Do not change it to
+`Always`. If you set `MCP_DEMO_IMAGE` yourself, use a new tag for each build so
+Helm can detect the image change.
+
 If the fixture was seeded by an earlier version of this branch, recreate the
 Kind cluster instead of trying to alter its immutable template identity:
 
@@ -191,7 +199,10 @@ HostedCluster provisioning backend, so the Cluster it creates is not a usable
 OpenShift cluster for application deployment. The reference OAuth client stays
 local; it connects to the deployed MCP endpoint over Kind's TLS gateway. See
 [`../tools/mcp-oauth-demo-client/RUNBOOK.md`](../tools/mcp-oauth-demo-client/RUNBOOK.md)
-for the local client, CA-trust, and host-mapping steps.
+for the local client, MCP Inspector, CA-trust, and host-mapping steps. The
+canonical endpoint is `https://mcp.<namespace>.svc.cluster.local:8443`: on the
+host it resolves through Kind's Gateway, while an in-cluster MCP client resolves
+the same name through the `mcp` Service directly to the MCP server pods.
 
 #### Full local dev environment (`PROFILE=dev-full`, kind only)
 
