@@ -83,6 +83,6 @@ func handleDeleteComputeInstance(
 		if err != nil {
 			return nil, DeleteComputeInstanceOutput{}, fmt.Errorf("failed to delete compute instance %q: %w", input.ID, err)
 		}
-		return nil, DeleteComputeInstanceOutput{ID: input.ID}, nil
+		return nil, DeleteComputeInstanceOutput(input), nil
 	}
 }
