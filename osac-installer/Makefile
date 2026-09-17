@@ -11,8 +11,8 @@
 #   make install-osac    PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
 #   make uninstall-osac  PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
 #   make uninstall-infra PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
-#   make install-mcp-demo PLATFORM=kind  PROFILE=dev  NS=osac
-#   make seed-mcp-demo-catalog PLATFORM=kind  PROFILE=dev  NS=osac
+#   make install-mcp-demo PLATFORM=openshift PROFILE=vmaas-ci NS=osac MCP_DEMO_IMAGE=<registry>/<repository>:<tag>
+#   make seed-mcp-demo-catalog PLATFORM=openshift PROFILE=vmaas-ci NS=osac
 #   make test            PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac  SUITE=all|fulfillment|operator|bmf
 #
 # PROFILE=dev-full (kind only) is a superset of dev: it runs the same chart-based
@@ -45,8 +45,8 @@ endif
 
 MCP_DEMO_TARGETS := install-mcp-demo seed-mcp-demo-catalog
 ifneq ($(filter $(MCP_DEMO_TARGETS),$(MAKECMDGOALS)),)
-ifneq ($(PLATFORM)/$(PROFILE),kind/dev)
-$(error $(MCP_DEMO_TARGETS) require PLATFORM=kind PROFILE=dev)
+ifneq ($(PLATFORM)/$(PROFILE),openshift/vmaas-ci)
+$(error $(MCP_DEMO_TARGETS) require PLATFORM=openshift PROFILE=vmaas-ci)
 endif
 endif
 ifeq ($(filter $(PLATFORM),kind openshift),)
@@ -108,12 +108,12 @@ endif
 # provider selection aligned.
 KIND_RUNTIME := scripts/dev-full/kind-runtime.sh
 KIND_ARM64_CLI_IMAGE := quay.io/openshift/origin-cli:4.20.0
-# A fresh local tag means Helm observes an image-field change and rolls the MCP
-# deployment after the image is loaded into Kind.  Do not use pullPolicy=Always
-# here: the Kind node cannot pull this localhost-only image from a registry.
-ifeq ($(strip $(MCP_DEMO_IMAGE)),)
-MCP_DEMO_IMAGE := localhost/fulfillment-service:mcp-demo-$(shell date +%s)
-endif
+# The OpenShift MCP demo deliberately requires the caller to supply a pullable
+# registry image. Its cluster cannot pull a developer's local Podman image.
+MCP_DEMO_IMAGE ?=
+MCP_DEMO_TENANT ?= osac-e2e-ci
+MCP_DEMO_STORAGE_TIER ?= local
+export MCP_DEMO_IMAGE MCP_DEMO_TENANT MCP_DEMO_STORAGE_TIER
 
 # quay.io/openshift/origin-cli:4.20.0 has no arm64 manifest. On Apple Silicon,
 # build a compatible local image with the same tag so every chart can continue
@@ -154,8 +154,9 @@ endef
 
 # Podman on macOS runs inside a VM. Stream exactly the files copied by the
 # fulfillment-service Containerfile into that VM so buildah sees a Linux build
-# context rather than a host path.
-define kind-build-fulfillment-service-image
+# context rather than a host path. This is shared by the MCP image push and the
+# Kind integration-test image load paths.
+define build-fulfillment-service-image
 	@if [ "$(HOST_IS_MAC)" = "true" ] && [ "$$(basename $(CONTAINER_TOOL))" = "podman" ]; then \
 		tar -C .. -cf - \
 			go.work \
@@ -330,19 +331,21 @@ install: install-infra install-osac ## Full install: infra + osac (PLATFORM= PRO
 endif
 
 .PHONY: install-mcp-demo
-install-mcp-demo: ## Install Kind dev OSAC, its MCP server, and the Cluster catalog item for the MCP PoC
+install-mcp-demo: ## Install OpenShift VMaaS OSAC, push and deploy its MCP server, then seed the VM catalog
+	@./scripts/validate-mcp-demo-image.sh "$${MCP_DEMO_IMAGE}"
 	$(MAKE) install-infra PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
 		DEPS_HELM_ARGS="" INFRA_HELM_ARGS=""
-	$(call kind-build-fulfillment-service-image,$(MCP_DEMO_IMAGE))
-	$(call kind-load-image,$(MCP_DEMO_IMAGE))
-	$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
-		EXTRA_HELM_ARGS="--set service.mcp.enabled=true --set-string service.mcp.externalHostname=mcp.$(NS).svc.cluster.local --set service.mcp.externalPort=8443 --set service.images.service=$(MCP_DEMO_IMAGE) --set service.images.pullPolicy=Never"
+	$(call build-fulfillment-service-image,$${MCP_DEMO_IMAGE})
+	$(CONTAINER_TOOL) push "$${MCP_DEMO_IMAGE}"
+	@domain="$$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')"; \
+		[ -n "$$domain" ] || { echo "ERROR: could not determine cluster domain" >&2; exit 1; }; \
+		$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
+			EXTRA_HELM_ARGS="--set service.mcp.enabled=true --set-string service.mcp.externalHostname=mcp-$(NS).$$domain --set service.images.service=$${MCP_DEMO_IMAGE} --set service.images.pullPolicy=Always"
 	$(MAKE) seed-mcp-demo-catalog PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS)
 
 .PHONY: seed-mcp-demo-catalog
-seed-mcp-demo-catalog: ## Seed Kind dev Cluster catalog and tenant fixtures required by the MCP PoC
+seed-mcp-demo-catalog: ## Seed and validate the OpenShift VMaaS catalog and tenant prerequisites for the MCP PoC
 	./scripts/seed-mcp-demo-catalog.sh $(NS)
-	CREATE_SUBNET_TARGET_NAMESPACES=false ./scripts/dev-full/provision-tenant.sh $(NS)
 
 .PHONY: uninstall
 uninstall: uninstall-osac uninstall-infra ## Full uninstall: osac + infra (PLATFORM= PROFILE= required)
@@ -357,7 +360,7 @@ ifeq ($(SUITE),all)
 	$(MAKE) test SUITE=bmf
 endif
 ifeq ($(SUITE),fulfillment)
-	$(call kind-build-fulfillment-service-image,localhost/fulfillment-service:it)
+	$(call build-fulfillment-service-image,localhost/fulfillment-service:it)
 	$(call kind-load-image,localhost/fulfillment-service:it)
 	$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
 		EXTRA_HELM_ARGS="--set service.images.service=localhost/fulfillment-service:it --set operator.enabled=false --set networkClass.enabled=false"

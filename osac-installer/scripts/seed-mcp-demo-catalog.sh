@@ -1,23 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Seeds the minimal catalog chain needed by the Cluster-focused MCP demo.
+# Seeds the published ComputeInstance catalog item used by the MCP demo, after
+# checking the OpenShift Virtualization and tenant prerequisites it relies on.
+#
+# The AAP template itself is intentionally not created here. AAP publishes the
+# osac.templates.ocp_virt_vm template and owns its lifecycle; this script only
+# creates the demo-specific DiskImage, InstanceType, and CatalogItem around it.
 #
 # Usage: seed-mcp-demo-catalog.sh [osac-namespace]
 
 NS="${1:-${NS:-osac}}"
+MCP_DEMO_TENANT="${MCP_DEMO_TENANT:-osac-e2e-ci}"
 LOCAL_PORT="${LOCAL_PORT:-8444}"
 API_HOST="fulfillment-internal-api.${NS}.svc.cluster.local"
 API_URL="https://${API_HOST}:${LOCAL_PORT}/api/private/v1"
-HOST_TYPE_NAME="mcp-demo-host-type"
-CLUSTER_VERSION_NAME="mcp-demo-cluster-version"
-CLUSTER_VERSION="4.20.0"
-CLUSTER_RELEASE_IMAGE="quay.io/openshift-release-dev/ocp-release:4.20.0-multi"
-TEMPLATE_NAME="mcp-demo-template"
-# ClusterTemplate IDs are forwarded unchanged to ClusterOrder.spec.templateID.
-# They must therefore use the AAP role-name format enforced by that CRD.
-TEMPLATE_ID="osac.templates.mcp_demo_cluster"
-CATALOG_ITEM_NAME="mcp-demo-cluster"
+DEFAULT_LABEL="osac.openshift.io/default"
+
+DISK_IMAGE_NAME="mcp-demo-fedora"
+DISK_IMAGE_SOURCE="quay.io/containerdisks/fedora:41"
+INSTANCE_TYPE_NAME="mcp-demo-small"
+STORAGE_TIER_NAME="${MCP_DEMO_STORAGE_TIER:-local}"
+TEMPLATE_NAME="ocp-virt-vm"
+TEMPLATE_ID="osac.templates.ocp_virt_vm"
+CATALOG_ITEM_NAME="mcp-demo-compute-instance"
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -28,12 +34,13 @@ log() {
     printf '%s\n' "$*" >&2
 }
 
-for command in kubectl curl jq; do
+for command in oc curl jq; do
     command -v "${command}" >/dev/null || fail "${command} is required"
 done
 
 [[ "${LOCAL_PORT}" =~ ^[1-9][0-9]{0,4}$ ]] || fail "LOCAL_PORT must be a TCP port number"
 ((LOCAL_PORT <= 65535)) || fail "LOCAL_PORT must be a TCP port number"
+[[ -n "${MCP_DEMO_TENANT}" ]] || fail "MCP_DEMO_TENANT must not be empty"
 
 tmp_dir="$(mktemp -d)"
 ca_file="${tmp_dir}/bundle.pem"
@@ -49,15 +56,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
-kubectl -n "${NS}" get configmap ca-bundle -o jsonpath='{.data.bundle\.pem}' >"${ca_file}"
-[[ -s "${ca_file}" ]] || fail "ca-bundle in namespace ${NS} has no bundle.pem"
+require_crd() {
+    local crd="$1"
+    local prerequisite="$2"
 
-admin_token="$(kubectl -n "${NS}" create token admin --duration=10m)"
-[[ -n "${admin_token}" ]] || fail "could not create a token for service account ${NS}/admin"
+    oc get crd "${crd}" >/dev/null 2>&1 || \
+        fail "${prerequisite} is not available: required CRD ${crd} was not found"
+}
 
-kubectl -n "${NS}" port-forward service/fulfillment-internal-api "${LOCAL_PORT}:8001" --address=127.0.0.1 \
-    >"${port_forward_log}" 2>&1 &
-port_forward_pid=$!
+preflight_platform() {
+    # HCO owns the KubeVirt deployment on OpenShift. Checking it as well as the
+    # CRDs yields a useful error when the operator is subscribed but unfinished.
+    require_crd virtualmachines.kubevirt.io "OpenShift Virtualization/KubeVirt"
+    require_crd datavolumes.cdi.kubevirt.io "Containerized Data Importer (CDI)"
+    oc -n openshift-cnv get hyperconverged kubevirt-hyperconverged >/dev/null 2>&1 || \
+        fail "OpenShift Virtualization is not ready: HyperConverged kubevirt-hyperconverged is missing"
+    oc -n "${NS}" get secret hub-access >/dev/null 2>&1 || \
+        fail "hub access is not ready: expected Secret ${NS}/hub-access"
+}
 
 api_list() {
     local resource="$1"
@@ -100,22 +116,7 @@ api_create() {
         "${API_URL}/${resource}"
 }
 
-api_update() {
-    local resource="$1"
-    local id="$2"
-    local body="$3"
-
-    curl --fail --silent --show-error \
-        --cacert "${ca_file}" \
-        --resolve "${API_HOST}:${LOCAL_PORT}:127.0.0.1" \
-        --header "Authorization: Bearer ${admin_token}" \
-        --header "Content-Type: application/json" \
-        -X PATCH \
-        --data "${body}" \
-        "${API_URL}/${resource}/${id}"
-}
-
-lookup_id() {
+lookup_object() {
     local resource="$1"
     local name="$2"
     local response
@@ -128,7 +129,7 @@ lookup_id() {
 
     case "${count}" in
         0) return 1 ;;
-        1) jq -er '.[0].id' <<<"${matches}" ;;
+        1) jq -ec '.[0]' <<<"${matches}" ;;
         *) printf 'ERROR: multiple %s fixtures named %s exist\n' "${resource}" "${name}" >&2; return 2 ;;
     esac
 }
@@ -138,14 +139,15 @@ ensure_resource() {
     local label="$2"
     local name="$3"
     local body="$4"
-    local existing_id
+    local object
     local response
     local id
     local lookup_status
 
-    if existing_id="$(lookup_id "${resource}" "${name}")"; then
+    if object="$(lookup_object "${resource}" "${name}")"; then
+        id="$(jq -er '.id' <<<"${object}")" || fail "${label} ${name} has no ID"
         log "Reusing ${label}: ${name}"
-        printf '%s\n' "${existing_id}"
+        printf '%s\n' "${id}"
         return 0
     else
         lookup_status=$?
@@ -155,67 +157,185 @@ ensure_resource() {
     fi
 
     response="$(api_create "${resource}" "${body}")" || fail "could not create ${label} ${name}"
-    id="$(jq -er '.id' <<<"${response}")" || fail "private API did not return an id for ${label} ${name}"
+    id="$(jq -er '.id' <<<"${response}")" || fail "private API did not return an ID for ${label} ${name}"
     log "Created ${label}: ${name}"
     printf '%s\n' "${id}"
 }
 
-ensure_cluster_template() {
-    local body="$1"
-    local existing_id
-    local response
-    local id
-    local lookup_status
+require_resource() {
+    local resource="$1"
+    local label="$2"
+    local name="$3"
+    local object
 
-    if existing_id="$(lookup_id cluster_templates "${TEMPLATE_NAME}")"; then
-        [[ "${existing_id}" == "${TEMPLATE_ID}" ]] || fail \
-            "MCP demo template ${TEMPLATE_NAME} has immutable ID ${existing_id}; recreate the Kind dev cluster before reseeding"
-        api_update cluster_templates "${existing_id}" "${body}" >/dev/null || \
-            fail "could not update cluster template ${TEMPLATE_NAME}"
-        log "Reconciled cluster template: ${TEMPLATE_NAME}"
-        printf '%s\n' "${existing_id}"
-        return 0
-    else
-        lookup_status=$?
+    if ! object="$(lookup_object "${resource}" "${name}")"; then
+        fail "${label} ${name} is missing; wait for its controller or configure the VMaaS environment"
     fi
-    if ((lookup_status != 1)); then
-        fail "could not look up cluster template ${TEMPLATE_NAME}"
-    fi
-
-    response="$(api_create cluster_templates "${body}")" || \
-        fail "could not create cluster template ${TEMPLATE_NAME}"
-    id="$(jq -er '.id' <<<"${response}")" || \
-        fail "private API did not return an id for cluster template ${TEMPLATE_NAME}"
-    [[ "${id}" == "${TEMPLATE_ID}" ]] || \
-        fail "private API created MCP demo template with ID ${id}, expected ${TEMPLATE_ID}"
-    log "Created cluster template: ${TEMPLATE_NAME}"
-    printf '%s\n' "${id}"
+    printf '%s\n' "${object}"
 }
 
-log "Seeding the MCP demo catalog in namespace ${NS}..."
+require_template() {
+    local template
 
-host_type_body="$(jq -n --arg name "${HOST_TYPE_NAME}" '{metadata: {name: $name}, title: "MCP demo host type"}')"
-host_type_id="$(ensure_resource host_types 'host type' "${HOST_TYPE_NAME}" "${host_type_body}")"
+    template="$(require_resource compute_instance_templates 'AAP-published ComputeInstance template' "${TEMPLATE_NAME}")"
+    [[ "$(jq -r '.id' <<<"${template}")" == "${TEMPLATE_ID}" ]] || \
+        fail "ComputeInstance template ${TEMPLATE_NAME} has ID $(jq -r '.id' <<<"${template}"); expected ${TEMPLATE_ID}"
+}
 
-cluster_version_body="$(jq -n \
-    --arg name "${CLUSTER_VERSION_NAME}" \
-    --arg version "${CLUSTER_VERSION}" \
-    --arg image "${CLUSTER_RELEASE_IMAGE}" \
-    '{metadata: {name: $name}, spec: {version: $version, image: $image, enabled: true, state: "CLUSTER_VERSION_STATE_ACTIVE"}}')"
-ensure_resource cluster_versions 'cluster version' "${CLUSTER_VERSION_NAME}" "${cluster_version_body}" >/dev/null
+require_storage_tier() {
+    local tier
 
-template_body="$(jq -n \
-    --arg id "${TEMPLATE_ID}" \
-    --arg name "${TEMPLATE_NAME}" \
-    --arg host_type_id "${host_type_id}" \
-    --arg cluster_version_name "${CLUSTER_VERSION_NAME}" \
-    '{id: $id, metadata: {name: $name}, title: "MCP demo cluster template", node_sets: {workers: {host_type: {id: $host_type_id}, size: 3}}, spec_defaults: {version: {name: $cluster_version_name}}}')"
-template_id="$(ensure_cluster_template "${template_body}")"
+    tier="$(require_resource storage_tiers 'StorageTier' "${STORAGE_TIER_NAME}")"
+    jq -e '.spec.protocol == "STORAGE_PROTOCOL_BLOCK" and (.spec.backends | length > 0)' <<<"${tier}" >/dev/null || \
+        fail "StorageTier ${STORAGE_TIER_NAME} must be a block tier with at least one backend"
+}
+
+require_default_networking() {
+    local virtual_networks
+    local subnets
+    local security_groups
+    local virtual_network
+    local subnet
+    local virtual_network_id
+
+    virtual_networks="$(api_list_with_retry virtual_networks)" || fail "could not list VirtualNetworks"
+    virtual_network="$(jq -ec --arg tenant "${MCP_DEMO_TENANT}" --arg label "${DEFAULT_LABEL}" '
+        [.items[]? | select(.metadata.tenant == $tenant and .metadata.labels[$label] == "true" and .status.state == "VIRTUAL_NETWORK_STATE_READY")]
+        | if length == 1 then .[0] else error("expected exactly one ready default VirtualNetwork") end
+    ' <<<"${virtual_networks}")" || fail "tenant ${MCP_DEMO_TENANT} needs exactly one ready default VirtualNetwork"
+    virtual_network_id="$(jq -er '.id' <<<"${virtual_network}")"
+
+    subnets="$(api_list_with_retry subnets)" || fail "could not list Subnets"
+    subnet="$(jq -ec --arg tenant "${MCP_DEMO_TENANT}" --arg label "${DEFAULT_LABEL}" --arg virtual_network_id "${virtual_network_id}" '
+        [.items[]? | select(
+            .metadata.tenant == $tenant and
+            .metadata.labels[$label] == "true" and
+            .status.state == "SUBNET_STATE_READY" and
+            .spec.virtual_network.id == $virtual_network_id
+        )]
+        | if length == 1 then .[0] else error("expected exactly one ready default Subnet") end
+    ' <<<"${subnets}")" || fail "tenant ${MCP_DEMO_TENANT} needs exactly one ready default Subnet"
+
+    security_groups="$(api_list_with_retry security_groups)" || fail "could not list SecurityGroups"
+    jq -e --arg tenant "${MCP_DEMO_TENANT}" --arg label "${DEFAULT_LABEL}" --arg virtual_network_id "${virtual_network_id}" '
+        [.items[]? | select(
+            .metadata.tenant == $tenant and
+            .metadata.labels[$label] == "true" and
+            .status.state == "SECURITY_GROUP_STATE_READY" and
+            .spec.virtual_network.id == $virtual_network_id
+        )]
+        | length == 1
+    ' <<<"${security_groups}" >/dev/null || \
+        fail "tenant ${MCP_DEMO_TENANT} needs exactly one ready default SecurityGroup"
+}
+
+verify_catalog_item() {
+    local item
+
+    item="$(require_resource compute_instance_catalog_items 'MCP demo catalog item' "${CATALOG_ITEM_NAME}")"
+    [[ "$(jq -r '.template.id' <<<"${item}")" == "${TEMPLATE_ID}" ]] || \
+        fail "MCP demo catalog item ${CATALOG_ITEM_NAME} does not reference ${TEMPLATE_ID}; recreate the demo environment instead of migrating it"
+    [[ "$(jq -r '.published' <<<"${item}")" == "true" ]] || \
+        fail "MCP demo catalog item ${CATALOG_ITEM_NAME} is not published"
+    jq -e \
+        --arg instance_type "${INSTANCE_TYPE_NAME}" \
+        --arg disk_image "${DISK_IMAGE_NAME}" \
+        --arg storage_tier "${STORAGE_TIER_NAME}" '
+        def has_policy($path; $editable; $default):
+            [.field_definitions[]? | select(
+                .path == $path and .editable == $editable and .default == $default
+            )] | length == 1;
+
+        has_policy("instance_type"; false; $instance_type) and
+        has_policy("disk_image"; false; $disk_image) and
+        has_policy("boot_disk.size_gib"; false; 20) and
+        has_policy("boot_disk.storage_tier"; false; {name: $storage_tier}) and
+        has_policy("run_strategy"; false; "Always") and
+        has_policy("network_attachments"; true; null)
+    ' <<<"${item}" >/dev/null || \
+        fail "MCP demo catalog item ${CATALOG_ITEM_NAME} has incompatible VM field policies; recreate the demo environment instead of migrating it"
+}
+
+log "Checking VMaaS prerequisites for the MCP demo in namespace ${NS}, tenant ${MCP_DEMO_TENANT}..."
+preflight_platform
+
+oc -n "${NS}" get configmap ca-bundle -o jsonpath='{.data.bundle\.pem}' >"${ca_file}"
+[[ -s "${ca_file}" ]] || fail "ca-bundle in namespace ${NS} has no bundle.pem"
+
+admin_token="$(oc -n "${NS}" create token admin --duration=10m)"
+[[ -n "${admin_token}" ]] || fail "could not create a token for service account ${NS}/admin"
+
+oc -n "${NS}" port-forward service/fulfillment-internal-api "${LOCAL_PORT}:8001" --address=127.0.0.1 \
+    >"${port_forward_log}" 2>&1 &
+port_forward_pid=$!
+
+require_template
+require_storage_tier
+require_default_networking
+
+disk_image_body="$(jq -n --arg name "${DISK_IMAGE_NAME}" --arg source "${DISK_IMAGE_SOURCE}" '
+    {
+        metadata: {name: $name},
+        spec: {
+            source_type: "SOURCE_TYPE_REGISTRY",
+            source_ref: $source,
+            guest_os_family: "GUEST_OS_FAMILY_LINUX",
+            architecture: ["ARCHITECTURE_AMD64"],
+            lifecycle: "DISK_IMAGE_LIFECYCLE_AVAILABLE"
+        }
+    }
+')"
+ensure_resource disk_images 'DiskImage' "${DISK_IMAGE_NAME}" "${disk_image_body}" >/dev/null
+
+instance_type_body="$(jq -n --arg name "${INSTANCE_TYPE_NAME}" '
+    {
+        metadata: {name: $name},
+        spec: {
+            cores: 2,
+            memory_gib: 4,
+            description: "MCP demo VM size",
+            state: "INSTANCE_TYPE_STATE_ACTIVE"
+        }
+    }
+')"
+ensure_resource instance_types 'InstanceType' "${INSTANCE_TYPE_NAME}" "${instance_type_body}" >/dev/null
+
+disk_image="$(require_resource disk_images DiskImage "${DISK_IMAGE_NAME}")"
+jq -e --arg source "${DISK_IMAGE_SOURCE}" '
+    .spec.lifecycle == "DISK_IMAGE_LIFECYCLE_AVAILABLE" and .spec.source_ref == $source
+' <<<"${disk_image}" >/dev/null || \
+    fail "DiskImage ${DISK_IMAGE_NAME} must be available and use ${DISK_IMAGE_SOURCE}"
+
+instance_type="$(require_resource instance_types InstanceType "${INSTANCE_TYPE_NAME}")"
+jq -e '.spec.state == "INSTANCE_TYPE_STATE_ACTIVE"' <<<"${instance_type}" >/dev/null || \
+    fail "InstanceType ${INSTANCE_TYPE_NAME} must be active"
 
 catalog_item_body="$(jq -n \
     --arg name "${CATALOG_ITEM_NAME}" \
-    --arg template_id "${template_id}" \
-    '{metadata: {name: $name}, title: "MCP demo cluster", description: "Seeded cluster offering for the OSAC Deployment MCP PoC.", template: {id: $template_id}, published: true}')"
-catalog_item_id="$(ensure_resource cluster_catalog_items 'catalog item' "${CATALOG_ITEM_NAME}" "${catalog_item_body}")"
+    --arg template_id "${TEMPLATE_ID}" \
+    --arg instance_type "${INSTANCE_TYPE_NAME}" \
+    --arg disk_image "${DISK_IMAGE_NAME}" \
+    --arg storage_tier "${STORAGE_TIER_NAME}" '
+    {
+        metadata: {name: $name},
+        title: "MCP demo virtual machine",
+        description: "Fedora virtual machine offering for the OSAC Deployment MCP PoC.",
+        template: {id: $template_id},
+        published: true,
+        tenant: "",
+        field_definitions: [
+            {path: "instance_type", display_name: "Instance Type", editable: false, default: $instance_type},
+            {path: "disk_image", display_name: "Disk Image", editable: false, default: $disk_image},
+            {path: "boot_disk.size_gib", display_name: "Boot Disk Size", editable: false, default: 20},
+            {path: "boot_disk.storage_tier", display_name: "Boot Disk Storage Tier", editable: false, default: {name: $storage_tier}},
+            {path: "run_strategy", display_name: "Run Strategy", editable: false, default: "Always"},
+            {path: "network_attachments", display_name: "Network Attachments", editable: true}
+        ]
+    }
+')"
+ensure_resource compute_instance_catalog_items 'catalog item' "${CATALOG_ITEM_NAME}" "${catalog_item_body}" >/dev/null
+verify_catalog_item
 
-log "MCP demo catalog is ready (catalog item id: ${catalog_item_id})."
+catalog_item="$(require_resource compute_instance_catalog_items 'MCP demo catalog item' "${CATALOG_ITEM_NAME}")"
+catalog_item_id="$(jq -er '.id' <<<"${catalog_item}")"
+log "MCP VMaaS demo is ready (catalog item id: ${catalog_item_id}, tenant: ${MCP_DEMO_TENANT})."

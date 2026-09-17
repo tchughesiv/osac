@@ -92,8 +92,8 @@ service:
   externalHostname: ""
   # [REQUIRED] Hostname for the internal API Route (e.g. fulfillment-internal-api-osac.apps.mycluster.example.com)
   internalHostname: ""
-  # Optional MCP endpoint. The Kind MCP-demo profile enables this using the
-  # existing fulfillment-service image; ordinary installs leave it disabled.
+  # Optional MCP endpoint. The OpenShift VMaaS MCP demo enables this with an
+  # explicit pullable fulfillment-service image; ordinary installs leave it disabled.
   mcp:
     enabled: false
     externalHostname: ""
