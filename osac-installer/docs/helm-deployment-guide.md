@@ -185,8 +185,8 @@ All targets require `PLATFORM=kind|openshift PROFILE=dev|vmaas-ci|... NS=<namesp
 | `make install` | Full install (infra + osac) |
 | `make install-infra` | Infrastructure only (osac-deps + osac-infra) |
 | `make install-osac` | OSAC instance only |
-| `make install-mcp-demo` | OpenShift VMaaS MCP install and ComputeInstance fixture |
-| `make seed-mcp-demo-catalog` | Seed and validate VMaaS fixture and tenant networking |
+| `make install-mcp-demo` | Install the OpenShift VMaaS MCP demo |
+| `make seed-mcp-demo-catalog` | Seed the VMaaS catalog and tenant network |
 | `make uninstall` | Full uninstall (reverse order) |
 | `make test` | Run integration tests (SUITE= required) |
 | `make helm-lint` | Lint all charts |
