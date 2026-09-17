@@ -96,8 +96,8 @@ type runnerContext struct {
 
 // ServerDeps contains the downstream clients used by MCP tool handlers.
 type ServerDeps struct {
-	CatalogItemsClient publicv1.ClusterCatalogItemsClient
-	ClustersClient     publicv1.ClustersClient
+	ComputeInstanceCatalogItemsClient publicv1.ComputeInstanceCatalogItemsClient
+	ComputeInstancesClient            publicv1.ComputeInstancesClient
 }
 
 // tokenExpirationLeeway is shared between the JWT validator and the bearer-token middleware's clock-skew
@@ -188,8 +188,8 @@ func (c *runnerContext) run(cmd *cobra.Command, argv []string) error {
 
 	// Build the MCP server and wrap it with bearer-token authentication:
 	handler, err := NewHandler(ServerDeps{
-		CatalogItemsClient: publicv1.NewClusterCatalogItemsClient(grpcClient),
-		ClustersClient:     publicv1.NewClustersClient(grpcClient),
+		ComputeInstanceCatalogItemsClient: publicv1.NewComputeInstanceCatalogItemsClient(grpcClient),
+		ComputeInstancesClient:            publicv1.NewComputeInstancesClient(grpcClient),
 	}, jwtValidator, c.args.oauthAuthorizationServer, c.args.oauthResourceURL)
 	if err != nil {
 		return fmt.Errorf("failed to create MCP handler: %w", err)
@@ -245,29 +245,29 @@ func newServer(deps ServerDeps) *mcp.Server {
 		Version: version.Get(),
 	}, nil)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:         "list_catalog_items",
-		Description:  "Lists the published cluster catalog items that clusters can be created from.",
-		InputSchema:  compatibleToolSchema[ListCatalogItemsInput](),
-		OutputSchema: compatibleToolSchema[ListCatalogItemsOutput](),
-	}, handleListCatalogItems(deps.CatalogItemsClient))
+		Name:         "list_resources",
+		Description:  "Lists supported OSAC resources. resource_type must be compute_instance_catalog_item or compute_instance.",
+		InputSchema:  resourceToolSchema[ListResourcesInput](),
+		OutputSchema: compatibleToolSchema[ListResourcesOutput](),
+	}, handleListResources(deps.ComputeInstanceCatalogItemsClient, deps.ComputeInstancesClient))
 	mcp.AddTool(server, &mcp.Tool{
-		Name:         "describe_catalog_item",
-		Description:  "Describes a cluster catalog item, including the fields callers may set when creating a cluster from it.",
-		InputSchema:  compatibleToolSchema[DescribeCatalogItemInput](),
-		OutputSchema: compatibleToolSchema[DescribeCatalogItemOutput](),
-	}, handleDescribeCatalogItem(deps.CatalogItemsClient))
+		Name:         "get_resource",
+		Description:  "Gets a supported OSAC resource by ID. resource_type must be compute_instance_catalog_item or compute_instance.",
+		InputSchema:  resourceToolSchema[GetResourceInput](),
+		OutputSchema: compatibleToolSchema[GetResourceOutput](),
+	}, handleGetResource(deps.ComputeInstanceCatalogItemsClient, deps.ComputeInstancesClient))
 	mcp.AddTool(server, &mcp.Tool{
-		Name:         "create_cluster_from_catalog_item",
-		Description:  "Creates a new cluster from a cluster catalog item.",
-		InputSchema:  compatibleToolSchema[CreateClusterFromCatalogItemInput](),
-		OutputSchema: compatibleToolSchema[CreateClusterFromCatalogItemOutput](),
-	}, handleCreateClusterFromCatalogItem(deps.ClustersClient))
+		Name:         "create_compute_instance_from_catalog_item",
+		Description:  "Creates a compute instance from a published compute instance catalog item.",
+		InputSchema:  compatibleToolSchema[CreateComputeInstanceFromCatalogItemInput](),
+		OutputSchema: compatibleToolSchema[CreateComputeInstanceFromCatalogItemOutput](),
+	}, handleCreateComputeInstanceFromCatalogItem(deps.ComputeInstancesClient))
 	mcp.AddTool(server, &mcp.Tool{
-		Name:         "get_cluster_status",
-		Description:  "Gets the current status of a cluster.",
-		InputSchema:  compatibleToolSchema[GetClusterStatusInput](),
-		OutputSchema: compatibleToolSchema[GetClusterStatusOutput](),
-	}, handleGetClusterStatus(deps.ClustersClient))
+		Name:         "delete_compute_instance",
+		Description:  "Deletes a compute instance by ID.",
+		InputSchema:  compatibleToolSchema[DeleteComputeInstanceInput](),
+		OutputSchema: compatibleToolSchema[DeleteComputeInstanceOutput](),
+	}, handleDeleteComputeInstance(deps.ComputeInstancesClient))
 	return server
 }
 
@@ -291,6 +291,31 @@ func compatibleToolSchema[T any]() json.RawMessage {
 	encoded, err = json.Marshal(document)
 	if err != nil {
 		panic(fmt.Errorf("encode compatible tool schema: %w", err))
+	}
+	return encoded
+}
+
+func resourceToolSchema[T any]() json.RawMessage {
+	schema := compatibleToolSchema[T]()
+	var document map[string]any
+	if err := json.Unmarshal(schema, &document); err != nil {
+		panic(fmt.Errorf("decode resource tool schema: %w", err))
+	}
+	properties, ok := document["properties"].(map[string]any)
+	if !ok {
+		panic("resource tool schema has no properties")
+	}
+	resourceType, ok := properties["resource_type"].(map[string]any)
+	if !ok {
+		panic("resource tool schema has no resource_type property")
+	}
+	resourceType["enum"] = []string{
+		string(ResourceTypeComputeInstanceCatalogItem),
+		string(ResourceTypeComputeInstance),
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		panic(fmt.Errorf("encode resource tool schema: %w", err))
 	}
 	return encoded
 }

@@ -104,9 +104,14 @@ var _ = Describe("newServer", func() {
 			Expect(hasMultiTypeSchema(tool.InputSchema)).To(BeFalse(), tool.Name+" input schema")
 			Expect(hasMultiTypeSchema(tool.OutputSchema)).To(BeFalse(), tool.Name+" output schema")
 		}
-		expectNullableArraySchema(tools["create_cluster_from_catalog_item"].InputSchema, "set")
-		expectNullableArraySchema(tools["list_catalog_items"].OutputSchema, "items")
-		expectNullableArraySchema(tools["get_cluster_status"].OutputSchema, "conditions")
+		Expect(tools).To(HaveKey("list_resources"))
+		Expect(tools).To(HaveKey("get_resource"))
+		Expect(tools).To(HaveKey("create_compute_instance_from_catalog_item"))
+		Expect(tools).To(HaveKey("delete_compute_instance"))
+		expectNullableArraySchema(tools["create_compute_instance_from_catalog_item"].InputSchema, "set")
+		expectNullableArraySchema(tools["list_resources"].OutputSchema, "items")
+		expectResourceTypeSchema(tools["list_resources"].InputSchema)
+		expectResourceTypeSchema(tools["get_resource"].InputSchema)
 	})
 })
 
@@ -129,6 +134,19 @@ func hasMultiTypeSchema(value any) bool {
 		}
 	}
 	return false
+}
+
+func expectResourceTypeSchema(schema any) {
+	document, ok := schema.(map[string]any)
+	Expect(ok).To(BeTrue())
+	properties, ok := document["properties"].(map[string]any)
+	Expect(ok).To(BeTrue())
+	resourceType, ok := properties["resource_type"].(map[string]any)
+	Expect(ok).To(BeTrue())
+	Expect(resourceType["enum"]).To(ConsistOf(
+		string(ResourceTypeComputeInstanceCatalogItem),
+		string(ResourceTypeComputeInstance),
+	))
 }
 
 func expectNullableArraySchema(schema any, name string) {
