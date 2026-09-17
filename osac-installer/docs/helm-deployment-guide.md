@@ -185,6 +185,7 @@ All targets require `PLATFORM=kind|openshift PROFILE=dev|vmaas-ci|... NS=<namesp
 | `make install` | Full install (infra + osac) |
 | `make install-infra` | Infrastructure only (osac-deps + osac-infra) |
 | `make install-osac` | OSAC instance only |
+| `make build-mcp-demo-image` | Build, verify, and push the MCP image |
 | `make install-mcp-demo` | Install the OpenShift VMaaS MCP demo |
 | `make seed-mcp-demo-catalog` | Seed the VMaaS catalog and tenant network |
 | `make uninstall` | Full uninstall (reverse order) |
@@ -200,10 +201,12 @@ license, and a registry image the cluster can pull:
 ```bash
 export REGISTRY_USER=your-registry-user
 export MCP_DEMO_IMAGE="quay.io/${REGISTRY_USER}/fulfillment-service:osac-4388"
+export MCP_DEMO_PLATFORM=linux/amd64
 podman login quay.io
 make install-mcp-demo PLATFORM=openshift PROFILE=vmaas-ci NS=osac \
   AAP_LICENSE_FILE=/absolute/path/to/license.zip \
-  MCP_DEMO_IMAGE="$MCP_DEMO_IMAGE"
+  MCP_DEMO_IMAGE="$MCP_DEMO_IMAGE" \
+  MCP_DEMO_PLATFORM="$MCP_DEMO_PLATFORM"
 ```
 
 The target builds and pushes the checkout's fulfillment-service image, then
@@ -213,6 +216,16 @@ Virtualization/KubeVirt, CDI, hub access, an AAP-published `ocp-virt-vm`
 template, a block StorageTier, and the demo tenant's ready default
 VirtualNetwork, Subnet, and SecurityGroup. It creates or reuses a Fedora
 DiskImage, small InstanceType, and published ComputeInstance catalog item.
+
+The image target defaults to `linux/amd64`; override
+`MCP_DEMO_PLATFORM=linux/arm64` for an ARM64 OpenShift cluster. To build, verify,
+and push without installing OSAC, run:
+
+```bash
+make build-mcp-demo-image \
+  MCP_DEMO_IMAGE="$MCP_DEMO_IMAGE" \
+  MCP_DEMO_PLATFORM="$MCP_DEMO_PLATFORM"
+```
 
 The target does not mutate incompatible catalog data and it does not create
 tenant network prerequisites. Recreate the demo environment rather than attempt

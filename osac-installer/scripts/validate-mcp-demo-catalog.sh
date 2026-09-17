@@ -18,8 +18,8 @@ fail() {
 bash -n "${SEED_SCRIPT}"
 bash -n "${IMAGE_VALIDATOR}"
 
-"${IMAGE_VALIDATOR}" quay.io/example/fulfillment-service:mcp-demo
-"${IMAGE_VALIDATOR}" registry.example.test:5000/example/fulfillment-service:v1.2.3
+"${IMAGE_VALIDATOR}" quay.io/example/fulfillment-service:mcp-demo linux/amd64
+"${IMAGE_VALIDATOR}" registry.example.test:5000/example/fulfillment-service:v1.2.3 linux/arm64
 for invalid_image in \
     '' \
     localhost/fulfillment-service:mcp-demo \
@@ -28,8 +28,13 @@ for invalid_image in \
     'quay.io/example/fulfillment-service:tag;touch' \
     'quay.io/example/fulfillment-service:$(touch)' \
     'quay.io/example/fulfillment-service:tag"quote'; do
-    if "${IMAGE_VALIDATOR}" "${invalid_image}" >/dev/null 2>&1; then
+    if "${IMAGE_VALIDATOR}" "${invalid_image}" linux/amd64 >/dev/null 2>&1; then
         fail "MCP demo image validator accepted unsafe or incomplete image reference: ${invalid_image}"
+    fi
+done
+for invalid_platform in '' darwin/amd64 linux/ppc64le 'linux/amd64;touch'; do
+    if "${IMAGE_VALIDATOR}" quay.io/example/fulfillment-service:mcp-demo "${invalid_platform}" >/dev/null 2>&1; then
+        fail "MCP demo image validator accepted unsupported platform: ${invalid_platform}"
     fi
 done
 
@@ -63,6 +68,43 @@ fake_bin="${tmp_dir}/bin"
 request_log="${tmp_dir}/curl.log"
 state_dir="${tmp_dir}/state"
 mkdir -p "${fake_bin}" "${state_dir}"
+
+fake_container="${fake_bin}/container"
+container_log="${tmp_dir}/container.log"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'printf "%q " "$@" >>"${CONTAINER_LOG}"' \
+    'printf "\n" >>"${CONTAINER_LOG}"' \
+    'case "${1:-}" in' \
+    '  build) exit 0 ;;' \
+    '  image) [[ "${2:-}" == "inspect" ]] || exit 1; printf "%s" "${IMAGE_PLATFORM}" ;;' \
+    '  push) exit 0 ;;' \
+    '  *) printf "unexpected container command: %s\n" "$*" >&2; exit 1 ;;' \
+    'esac' >"${fake_container}"
+chmod +x "${fake_container}"
+
+CONTAINER_LOG="${container_log}" IMAGE_PLATFORM=linux/amd64 \
+    make -C "${INSTALLER_DIR}" build-mcp-demo-image \
+        CONTAINER_TOOL="${fake_container}" \
+        MCP_DEMO_IMAGE=quay.io/example/fulfillment-service:mcp-demo \
+        MCP_DEMO_PLATFORM=linux/amd64 >/dev/null
+rg -F -- 'build --platform=linux/amd64' "${container_log}" >/dev/null || \
+    fail "MCP demo image target did not request the configured platform"
+rg -F -- 'push quay.io/example/fulfillment-service:mcp-demo' "${container_log}" >/dev/null || \
+    fail "MCP demo image target did not push the configured image"
+
+: >"${container_log}"
+if CONTAINER_LOG="${container_log}" IMAGE_PLATFORM=linux/arm64 \
+    make -C "${INSTALLER_DIR}" build-mcp-demo-image \
+        CONTAINER_TOOL="${fake_container}" \
+        MCP_DEMO_IMAGE=quay.io/example/fulfillment-service:mcp-demo \
+        MCP_DEMO_PLATFORM=linux/amd64 >/dev/null 2>&1; then
+    fail "MCP demo image target accepted a mismatched image platform"
+fi
+if rg -F -- 'push quay.io/example/fulfillment-service:mcp-demo' "${container_log}" >/dev/null; then
+    fail "MCP demo image target pushed an image with the wrong platform"
+fi
 
 printf '%s\n' \
     '#!/usr/bin/env bash' \
@@ -196,7 +238,11 @@ done
 makefile="${INSTALLER_DIR}/Makefile"
 for expected in \
     'require PLATFORM=openshift PROFILE=vmaas-ci' \
-    'validate-mcp-demo-image.sh "$${MCP_DEMO_IMAGE}"' \
+    'build-mcp-demo-image' \
+    'MCP_DEMO_PLATFORM ?= linux/amd64' \
+    'validate-mcp-demo-image.sh "$${MCP_DEMO_IMAGE}" "$${MCP_DEMO_PLATFORM}"' \
+    '--platform="$(2)"' \
+    '$(MAKE) build-mcp-demo-image MCP_DEMO_IMAGE="$${MCP_DEMO_IMAGE}" MCP_DEMO_PLATFORM="$${MCP_DEMO_PLATFORM}"' \
     '$(CONTAINER_TOOL) push "$${MCP_DEMO_IMAGE}"' \
     'service.images.service=$${MCP_DEMO_IMAGE}' \
     'service.images.pullPolicy=Always' \

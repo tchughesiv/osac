@@ -12,6 +12,7 @@
 #   make uninstall-osac  PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
 #   make uninstall-infra PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
 #   make install-mcp-demo PLATFORM=openshift PROFILE=vmaas-ci NS=osac MCP_DEMO_IMAGE=<registry>/<repository>:<tag>
+#   make build-mcp-demo-image MCP_DEMO_IMAGE=<registry>/<repository>:<tag> MCP_DEMO_PLATFORM=linux/amd64
 #   make seed-mcp-demo-catalog PLATFORM=openshift PROFILE=vmaas-ci NS=osac
 #   make test            PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac  SUITE=all|fulfillment|operator|bmf
 #
@@ -111,9 +112,10 @@ KIND_ARM64_CLI_IMAGE := quay.io/openshift/origin-cli:4.20.0
 # The OpenShift MCP demo deliberately requires the caller to supply a pullable
 # registry image. Its cluster cannot pull a developer's local Podman image.
 MCP_DEMO_IMAGE ?=
+MCP_DEMO_PLATFORM ?= linux/amd64
 MCP_DEMO_TENANT ?= osac-e2e-ci
 MCP_DEMO_STORAGE_TIER ?= local
-export MCP_DEMO_IMAGE MCP_DEMO_TENANT MCP_DEMO_STORAGE_TIER
+export MCP_DEMO_IMAGE MCP_DEMO_PLATFORM MCP_DEMO_TENANT MCP_DEMO_STORAGE_TIER
 
 # quay.io/openshift/origin-cli:4.20.0 has no arm64 manifest. On Apple Silicon,
 # build a compatible local image with the same tag so every chart can continue
@@ -168,9 +170,9 @@ define build-fulfillment-service-image
 			osac-metering/schema/go.mod osac-metering/schema/go.sum \
 			osac-metering/metering-service/go.mod osac-metering/metering-service/go.sum \
 			osac-metering/adapters/go.mod osac-metering/adapters/go.sum | \
-		$(CONTAINER_TOOL) machine ssh -- podman build -t $(1) -f fulfillment-service/Containerfile -; \
+		$(CONTAINER_TOOL) machine ssh -- podman build $(if $(strip $(2)),--platform="$(2)") -t $(1) -f fulfillment-service/Containerfile -; \
 	else \
-		$(CONTAINER_TOOL) build -t $(1) -f ../fulfillment-service/Containerfile ..; \
+		$(CONTAINER_TOOL) build $(if $(strip $(2)),--platform="$(2)") -t $(1) -f ../fulfillment-service/Containerfile ..; \
 	fi
 endef
 
@@ -330,13 +332,23 @@ else
 install: install-infra install-osac ## Full install: infra + osac (PLATFORM= PROFILE= required)
 endif
 
+.PHONY: build-mcp-demo-image
+build-mcp-demo-image: ## Build, verify, and push the MCP demo image (MCP_DEMO_IMAGE= required)
+	@./scripts/validate-mcp-demo-image.sh "$${MCP_DEMO_IMAGE}" "$${MCP_DEMO_PLATFORM}"
+	$(call build-fulfillment-service-image,$${MCP_DEMO_IMAGE},$${MCP_DEMO_PLATFORM})
+	@actual_platform="$$( $(CONTAINER_TOOL) image inspect --format '{{.Os}}/{{.Architecture}}' "$${MCP_DEMO_IMAGE}")"; \
+		[ "$$actual_platform" = "$${MCP_DEMO_PLATFORM}" ] || { \
+			echo "ERROR: built MCP demo image platform $$actual_platform does not match $${MCP_DEMO_PLATFORM}" >&2; \
+			exit 1; \
+		}
+	$(CONTAINER_TOOL) push "$${MCP_DEMO_IMAGE}"
+
 .PHONY: install-mcp-demo
 install-mcp-demo: ## Install OpenShift VMaaS OSAC, push and deploy its MCP server, then seed the VM catalog
-	@./scripts/validate-mcp-demo-image.sh "$${MCP_DEMO_IMAGE}"
+	@./scripts/validate-mcp-demo-image.sh "$${MCP_DEMO_IMAGE}" "$${MCP_DEMO_PLATFORM}"
 	$(MAKE) install-infra PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
 		DEPS_HELM_ARGS="" INFRA_HELM_ARGS=""
-	$(call build-fulfillment-service-image,$${MCP_DEMO_IMAGE})
-	$(CONTAINER_TOOL) push "$${MCP_DEMO_IMAGE}"
+	$(MAKE) build-mcp-demo-image MCP_DEMO_IMAGE="$${MCP_DEMO_IMAGE}" MCP_DEMO_PLATFORM="$${MCP_DEMO_PLATFORM}"
 	@domain="$$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')"; \
 		[ -n "$$domain" ] || { echo "ERROR: could not determine cluster domain" >&2; exit 1; }; \
 		$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \

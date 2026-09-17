@@ -173,18 +173,30 @@ export NS=osac
 export AAP_LICENSE_FILE=/absolute/path/to/license.zip
 export REGISTRY_USER=your-registry-user
 export MCP_DEMO_IMAGE="quay.io/${REGISTRY_USER}/fulfillment-service:osac-4388"
+export MCP_DEMO_PLATFORM=linux/amd64
 
 podman login quay.io
 make install-mcp-demo \
   PLATFORM=openshift PROFILE=vmaas-ci NS="$NS" \
   AAP_LICENSE_FILE="$AAP_LICENSE_FILE" \
-  MCP_DEMO_IMAGE="$MCP_DEMO_IMAGE"
+  MCP_DEMO_IMAGE="$MCP_DEMO_IMAGE" \
+  MCP_DEMO_PLATFORM="$MCP_DEMO_PLATFORM"
 ```
 
 The target builds the checkout's fulfillment-service image (including the
 macOS Podman-machine build path), pushes it, and deploys that exact image with
 `imagePullPolicy: Always`. Rerun the same command after changing MCP code; a
 newly pushed image is fetched on the rollout even when the image tag is reused.
+It defaults to `linux/amd64`; set `MCP_DEMO_PLATFORM=linux/arm64` only for an
+ARM64 OpenShift cluster.
+
+To build, verify, and push the image without installing OSAC, run:
+
+```bash
+make build-mcp-demo-image \
+  MCP_DEMO_IMAGE="$MCP_DEMO_IMAGE" \
+  MCP_DEMO_PLATFORM="$MCP_DEMO_PLATFORM"
+```
 
 It validates the required platform assets, including the AAP-published
 `ocp-virt-vm` template, then seeds only missing demo `DiskImage`, `InstanceType`,
