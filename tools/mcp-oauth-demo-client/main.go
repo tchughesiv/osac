@@ -52,21 +52,24 @@ var (
 	)
 	catalogItem = flag.String(
 		"catalog-item", "",
-		"id or name of the catalog item to create a demo cluster from. If empty, the first item returned by "+
-			"list_catalog_items is used.",
+		"ID of the ComputeInstance catalog item to use. If empty, the first item returned by list_resources is used.",
 	)
-	clusterName = flag.String(
-		"cluster-name", "",
-		`Name for the demo cluster. Defaults to "mcp-oauth-demo-<unix timestamp>".`,
+	computeInstanceName = flag.String(
+		"compute-instance-name", "",
+		`Name for the demo ComputeInstance. Defaults to "mcp-oauth-demo-<unix timestamp>".`,
 	)
 	pollCount = flag.Int(
 		"poll", 3,
-		"Number of extra times to call get_cluster_status after creation, to show state progress over time. "+
+		"Number of extra times to call get_resource after creation, to show state progress over time. "+
 			"0 means only the initial status check runs.",
 	)
 	pollInterval = flag.Duration(
 		"poll-interval", 5*time.Second,
 		"Delay between status polls.",
+	)
+	deleteComputeInstance = flag.Bool(
+		"delete", false,
+		"Delete the ComputeInstance through MCP after polling. The default leaves it available for inspection.",
 	)
 	fieldOverrides fieldOverrideFlag
 )
@@ -74,8 +77,7 @@ var (
 func init() {
 	flag.Var(
 		&fieldOverrides, "set",
-		"key=value field override for create_cluster_from_catalog_item (repeatable), matching the catalog "+
-			"item's fields or template_parameters policies from describe_catalog_item.",
+		"key=value field override for create_compute_instance_from_catalog_item (repeatable).",
 	)
 }
 
@@ -93,41 +95,32 @@ func (f *fieldOverrideFlag) Set(value string) error {
 // These types decode the MCP tools' JSON contracts. They remain local because this standalone client must not
 // import fulfillment-service internals.
 
-type catalogItemSummary struct {
+type resourceSummary struct {
 	ID          string `json:"id"`
+	Name        string `json:"name"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
+	State       string `json:"state"`
 }
 
-type listCatalogItemsOutput struct {
-	Items []catalogItemSummary `json:"items"`
+type listResourcesOutput struct {
+	Offset int32             `json:"offset"`
+	Size   int32             `json:"size"`
+	Total  int32             `json:"total"`
+	Items  []resourceSummary `json:"items"`
 }
 
-type describeCatalogItemOutput struct {
-	ID                 string         `json:"id"`
-	Title              string         `json:"title"`
-	Description        string         `json:"description"`
-	Fields             map[string]any `json:"fields"`
-	TemplateParameters map[string]any `json:"template_parameters"`
+type getResourceOutput struct {
+	Resource map[string]any `json:"resource"`
 }
 
-type createClusterOutput struct {
+type createComputeInstanceOutput struct {
 	ID    string `json:"id"`
 	State string `json:"state"`
 }
 
-type conditionSummary struct {
-	Type    string `json:"type"`
-	Status  string `json:"status"`
-	Message string `json:"message,omitempty"`
-}
-
-type getClusterStatusOutput struct {
-	ID         string             `json:"id"`
-	State      string             `json:"state"`
-	Conditions []conditionSummary `json:"conditions"`
-	APIURL     string             `json:"api_url,omitempty"`
-	ConsoleURL string             `json:"console_url,omitempty"`
+type deleteComputeInstanceOutput struct {
+	ID string `json:"id"`
 }
 
 // codeReceiver receives the OAuth callback and forwards its authorization result to the waiting request.
@@ -302,14 +295,16 @@ func main() {
 	defer func() { _ = session.Close() }()
 	log.Println("Connected and authenticated \u2014 the browser login above succeeded.")
 
-	items, err := callTool[listCatalogItemsOutput](ctx, session, "list_catalog_items", nil)
+	items, err := callTool[listResourcesOutput](ctx, session, "list_resources", map[string]any{
+		"resource_type": "compute_instance_catalog_item",
+	})
 	if err != nil {
-		log.Fatalf("list_catalog_items: %v", err)
+		log.Fatalf("list_resources(compute_instance_catalog_item): %v", err)
 	}
 	if len(items.Items) == 0 {
-		log.Fatal("no catalog items are published on this fulfillment-service instance \u2014 nothing to demo")
+		log.Fatal("no ComputeInstance catalog items are published on this fulfillment-service instance \u2014 nothing to demo")
 	}
-	log.Printf("Found %d catalog item(s):", len(items.Items))
+	log.Printf("Found %d of %d ComputeInstance catalog item(s):", len(items.Items), items.Total)
 	for _, item := range items.Items {
 		log.Printf("  - %s: %s \u2014 %s", item.ID, item.Title, item.Description)
 	}
@@ -318,64 +313,72 @@ func main() {
 	if ref == "" {
 		ref = items.Items[0].ID
 	}
-	described, err := callTool[describeCatalogItemOutput](ctx, session, "describe_catalog_item", map[string]any{
-		"id": ref,
+	described, err := callTool[getResourceOutput](ctx, session, "get_resource", map[string]any{
+		"resource_type": "compute_instance_catalog_item",
+		"id":            ref,
 	})
 	if err != nil {
-		log.Fatalf("describe_catalog_item(%q): %v", ref, err)
+		log.Fatalf("get_resource(compute_instance_catalog_item, %q): %v", ref, err)
 	}
-	log.Printf("Describing %q (%s):", described.Title, described.ID)
-	fields, err := json.MarshalIndent(described.Fields, "", "  ")
+	describedJSON, err := json.MarshalIndent(described.Resource, "", "  ")
 	if err != nil {
-		log.Fatalf("formatting catalog item field policies: %v", err)
+		log.Fatalf("formatting ComputeInstance catalog item: %v", err)
 	}
-	templateParameters, err := json.MarshalIndent(described.TemplateParameters, "", "  ")
-	if err != nil {
-		log.Fatalf("formatting catalog item template parameter policies: %v", err)
-	}
-	log.Printf("  fields: %s", fields)
-	log.Printf("  template_parameters: %s", templateParameters)
+	log.Printf("ComputeInstance catalog item %q:", ref)
+	log.Printf("  resource: %s", describedJSON)
 
-	name := *clusterName
+	name := *computeInstanceName
 	if name == "" {
 		name = fmt.Sprintf("mcp-oauth-demo-%d", time.Now().Unix())
 	}
-	createArgs := map[string]any{"name": name, "catalog_item": described.ID}
+	createArgs := map[string]any{"name": name, "catalog_item": ref}
 	if len(fieldOverrides) > 0 {
 		createArgs["set"] = []string(fieldOverrides)
 	}
-	log.Printf("Creating cluster %q from %q ...", name, described.ID)
-	created, err := callTool[createClusterOutput](ctx, session, "create_cluster_from_catalog_item", createArgs)
+	log.Printf("Creating ComputeInstance %q from %q ...", name, ref)
+	created, err := callTool[createComputeInstanceOutput](
+		ctx, session, "create_compute_instance_from_catalog_item", createArgs,
+	)
 	if err != nil {
-		log.Fatalf("create_cluster_from_catalog_item: %v", err)
+		log.Fatalf("create_compute_instance_from_catalog_item: %v", err)
 	}
-	log.Printf("Created cluster %s (state=%s)", created.ID, created.State)
+	log.Printf("Created ComputeInstance %s (state=%s)", created.ID, created.State)
 
 	for i := 0; i <= *pollCount; i++ {
-		status, err := callTool[getClusterStatusOutput](ctx, session, "get_cluster_status", map[string]any{
-			"id": created.ID,
+		instance, err := callTool[getResourceOutput](ctx, session, "get_resource", map[string]any{
+			"resource_type": "compute_instance",
+			"id":            created.ID,
 		})
 		if err != nil {
-			log.Fatalf("get_cluster_status: %v", err)
+			log.Fatalf("get_resource(compute_instance): %v", err)
 		}
-		log.Printf("Status: state=%s", status.State)
-		for _, condition := range status.Conditions {
-			log.Printf("  - %s=%s: %s", condition.Type, condition.Status, condition.Message)
-		}
-		if status.APIURL != "" {
-			log.Printf("  api_url=%s", status.APIURL)
-		}
-		if status.ConsoleURL != "" {
-			log.Printf("  console_url=%s", status.ConsoleURL)
-		}
+		log.Printf("ComputeInstance status: state=%s", resourceState(instance.Resource))
 		if i < *pollCount {
 			time.Sleep(*pollInterval)
 		}
 	}
 
-	log.Printf(
-		"Demo complete. Cluster %q was NOT deleted automatically \u2014 clean it up (osac CLI or console) if this "+
-			"was just a demo run.",
-		name,
-	)
+	if *deleteComputeInstance {
+		deleted, err := callTool[deleteComputeInstanceOutput](ctx, session, "delete_compute_instance", map[string]any{
+			"id": created.ID,
+		})
+		if err != nil {
+			log.Fatalf("delete_compute_instance: %v", err)
+		}
+		log.Printf("Deleted ComputeInstance %s.", deleted.ID)
+		return
+	}
+	log.Printf("Demo complete. ComputeInstance %q was NOT deleted automatically; rerun with -delete to remove it through MCP.", name)
+}
+
+func resourceState(resource map[string]any) string {
+	status, ok := resource["status"].(map[string]any)
+	if !ok {
+		return "unknown"
+	}
+	state, _ := status["state"].(string)
+	if state == "" {
+		return "unknown"
+	}
+	return state
 }
