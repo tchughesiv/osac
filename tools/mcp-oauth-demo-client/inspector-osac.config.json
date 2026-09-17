@@ -2,7 +2,7 @@
   "mcpServers": {
     "osac": {
       "type": "http",
-      "url": "https://mcp.osac.svc.cluster.local:8443",
+      "url": "https://mcp.<namespace>.<cluster-domain>",
       "oauth": {
         "clientId": "osac-mcp-client"
       }

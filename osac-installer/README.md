@@ -153,56 +153,65 @@ make install-osac  PLATFORM=openshift PROFILE=<profile> NS=<namespace>   # OSAC 
 | `INFRA_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac-infra` release |
 | `EXTRA_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac` application release |
 
-#### Deployment MCP PoC (`PROFILE=dev`, kind only)
+#### Deployment MCP VMaaS PoC (`PLATFORM=openshift PROFILE=vmaas-ci`)
 
-The Cluster-focused Deployment MCP PoC needs one published Cluster catalog
-item and an MCP endpoint. On Kind, AAP is deliberately disabled, so use the
-dedicated target to install the `dev` control plane, build and load the
-checkout's fulfillment-service image with the MCP server, and seed that fixture
-safely:
+The Deployment MCP PoC demonstrates a tenant creating a virtual machine from a
+published `ComputeInstance` catalog item on OpenShift Virtualization. It is not
+a Kind target: VMaaS needs OpenShift Virtualization, CDI, LVMS storage, AAP,
+and an OpenShift cluster that can pull the demo image.
 
-```bash
-make install-mcp-demo PLATFORM=kind PROFILE=dev NS=osac
-```
+Use a dedicated demo cluster. `install-mcp-demo` installs the VMaaS CI
+prerequisites and managed Keycloak; it must not be used to adopt or alter
+cluster-scoped infrastructure or a shared Keycloak installation.
 
-The target uses a short-lived `admin` ServiceAccount token and a temporary
-port-forward to seed `ClusterVersion` → `HostType` → `ClusterTemplate` →
-`ClusterCatalogItem` through the private API, with TLS verified using the
-namespace's `ca-bundle`. It reuses existing fixture names and reconciles the
-template version default on rerun. The ClusterTemplate is created with the
-provider-style ID `osac.templates.mcp_demo_cluster`, because OSAC forwards that
-ID directly to `ClusterOrder.spec.templateID`. It also provisions the local
-`tenant1` tenant, matching Keycloak organization, and dev-user membership, so
-the OAuth user receives the `organization` claim required to create resources. For an
-existing Kind `dev` install, run only
-`make seed-mcp-demo-catalog PLATFORM=kind PROFILE=dev NS=osac`, then start a
-new browser login to obtain an updated token.
-
-Each `install-mcp-demo` run assigns the locally built fulfillment-service image
-a fresh tag, loads that exact image into Kind, and passes the new tag to Helm.
-This automatically rolls `fulfillment-mcp-server`; no manual rollout restart is
-needed when iterating on MCP code. The image uses `imagePullPolicy: Never`
-because it exists only in the Kind node's local image store. Do not change it to
-`Always`. If you set `MCP_DEMO_IMAGE` yourself, use a new tag for each build so
-Helm can detect the image change.
-
-If the fixture was seeded by an earlier version of this branch, recreate the
-Kind cluster instead of trying to alter its immutable template identity:
+Before installing, authenticate `oc`, log Podman into a registry the cluster
+can pull from, and set an absolute AAP license path and an explicit remote image
+reference. The image must not use `localhost` or `127.0.0.1`.
 
 ```bash
-make uninstall PLATFORM=kind PROFILE=dev NS=osac
-make install-mcp-demo PLATFORM=kind PROFILE=dev NS=osac
+export NS=osac
+export AAP_LICENSE_FILE=/absolute/path/to/license.zip
+export REGISTRY_USER=your-registry-user
+export MCP_DEMO_IMAGE="quay.io/${REGISTRY_USER}/fulfillment-service:osac-4388"
+
+podman login quay.io
+make install-mcp-demo \
+  PLATFORM=openshift PROFILE=vmaas-ci NS="$NS" \
+  AAP_LICENSE_FILE="$AAP_LICENSE_FILE" \
+  MCP_DEMO_IMAGE="$MCP_DEMO_IMAGE"
 ```
 
-This is an API/authentication/attribution demo: Kind `dev` has no AAP or
-HostedCluster provisioning backend, so the Cluster it creates is not a usable
-OpenShift cluster for application deployment. The reference OAuth client stays
-local; it connects to the deployed MCP endpoint over Kind's TLS gateway. See
-[`../tools/mcp-oauth-demo-client/RUNBOOK.md`](../tools/mcp-oauth-demo-client/RUNBOOK.md)
-for the local client, MCP Inspector, CA-trust, and host-mapping steps. The
-canonical endpoint is `https://mcp.<namespace>.svc.cluster.local:8443`: on the
-host it resolves through Kind's Gateway, while an in-cluster MCP client resolves
-the same name through the `mcp` Service directly to the MCP server pods.
+The target builds the checkout's fulfillment-service image (including the
+macOS Podman-machine build path), pushes it, and deploys that exact image with
+`imagePullPolicy: Always`. Rerun the same command after changing MCP code; a
+newly pushed image is fetched on the rollout even when the image tag is reused.
+
+It validates the required platform assets, including the AAP-published
+`ocp-virt-vm` template, then seeds only missing demo `DiskImage`, `InstanceType`,
+and `mcp-demo-compute-instance` catalog-item assets. The target defaults to
+tenant `osac-e2e-ci` and storage tier `local`; override `MCP_DEMO_TENANT` or
+`MCP_DEMO_STORAGE_TIER` only when the selected tenant
+already has exactly one ready default VirtualNetwork, Subnet, and SecurityGroup,
+and the named tier is a usable block-storage tier. The seeder never migrates an
+incompatible existing catalog item; recreate the demo environment instead.
+
+Discover the endpoint from the cluster rather than hard-coding a route:
+
+```bash
+DOMAIN="$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')"
+MCP_URL="https://mcp-${NS}.${DOMAIN}"
+oc rollout status deployment/fulfillment-mcp-server -n "$NS" --timeout=5m
+printf '%s\n' "$MCP_URL"
+```
+
+The four MCP tools are `list_resources`, `get_resource`,
+`create_compute_instance_from_catalog_item`, and `delete_compute_instance`.
+The read tools explicitly allow only `compute_instance_catalog_item` and
+`compute_instance`; they are not a generic fulfillment API proxy. See the
+[`mcp-oauth-demo-client` runbook](../tools/mcp-oauth-demo-client/RUNBOOK.md)
+for browser OAuth, MCP Inspector, and cleanup. A ready VM is infrastructure
+only in this phase—it does not deploy an application or configure workload
+content.
 
 #### Full local dev environment (`PROFILE=dev-full`, kind only)
 
