@@ -190,6 +190,24 @@ newly pushed image is fetched on the rollout even when the image tag is reused.
 It defaults to `linux/amd64`; set `MCP_DEMO_PLATFORM=linux/arm64` only for an
 ARM64 OpenShift cluster.
 
+If the cluster already has the supported OpenShift cert-manager operator, do
+not let Helm adopt its `cert-manager-operator` namespace. Confirm its
+`CertManager` instance and `certificates.cert-manager.io` CRD are Ready, then
+disable only the installer-owned cert-manager Subscription and namespaces:
+
+```bash
+DEPS_HELM_ARGS='--set certManager.enabled=false' \
+make install-mcp-demo \
+  PLATFORM=openshift PROFILE=vmaas-ci NS="$NS" \
+  AAP_LICENSE_FILE="$AAP_LICENSE_FILE" \
+  MCP_DEMO_IMAGE="$MCP_DEMO_IMAGE"
+```
+
+OSAC still creates its own certificate, issuer, and trust-bundle resources
+through that existing operator. Use this override only when the existing
+operator is healthy; it does not make other shared prerequisite operators safe
+to adopt.
+
 To build, verify, and push the image without installing OSAC, run:
 
 ```bash

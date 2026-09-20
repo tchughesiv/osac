@@ -234,6 +234,14 @@ make build-mcp-demo-image \
   MCP_DEMO_PLATFORM="$MCP_DEMO_PLATFORM"
 ```
 
+If a healthy, supported OpenShift cert-manager operator already owns the
+`cert-manager-operator` namespace, pass
+`DEPS_HELM_ARGS='--set certManager.enabled=false'` to `install-mcp-demo`. This
+prevents Helm from attempting to adopt that namespace while still allowing
+OSAC's certificates, issuer, and trust bundle to use the existing
+cert-manager APIs. It does not permit adopting other shared prerequisite
+operators.
+
 The target does not mutate incompatible catalog data and it does not create
 tenant network prerequisites. Recreate the demo environment rather than attempt
 a migration, and choose a prepared tenant with `MCP_DEMO_TENANT` when the

@@ -242,6 +242,7 @@ for expected in \
     'MCP_DEMO_PLATFORM ?= linux/amd64' \
     'validate-mcp-demo-image.sh "$${MCP_DEMO_IMAGE}" "$${MCP_DEMO_PLATFORM}"' \
     '--platform="$(2)"' \
+    'DEPS_HELM_ARGS="$(DEPS_HELM_ARGS)" INFRA_HELM_ARGS=""' \
     '$(MAKE) build-mcp-demo-image MCP_DEMO_IMAGE="$${MCP_DEMO_IMAGE}" MCP_DEMO_PLATFORM="$${MCP_DEMO_PLATFORM}"' \
     '$(CONTAINER_TOOL) push "$${MCP_DEMO_IMAGE}"' \
     'service.images.service=$${MCP_DEMO_IMAGE}' \

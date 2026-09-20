@@ -352,7 +352,7 @@ build-mcp-demo-image: ## Build, verify, and push the MCP demo image (MCP_DEMO_IM
 install-mcp-demo: ## Install OpenShift VMaaS OSAC, push and deploy its MCP server, then seed the VM catalog
 	@./scripts/validate-mcp-demo-image.sh "$${MCP_DEMO_IMAGE}" "$${MCP_DEMO_PLATFORM}"
 	$(MAKE) install-infra PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
-		DEPS_HELM_ARGS="" INFRA_HELM_ARGS=""
+		DEPS_HELM_ARGS="$(DEPS_HELM_ARGS)" INFRA_HELM_ARGS=""
 	$(MAKE) build-mcp-demo-image MCP_DEMO_IMAGE="$${MCP_DEMO_IMAGE}" MCP_DEMO_PLATFORM="$${MCP_DEMO_PLATFORM}"
 	@domain="$$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')"; \
 		[ -n "$$domain" ] || { echo "ERROR: could not determine cluster domain" >&2; exit 1; }; \
