@@ -1,0 +1,180 @@
+# VMaaS MCP demo on a shared OpenShift cluster. Platform operators and the
+# Keycloak server are external; this release owns only resources in the OSAC
+# namespace and an isolated realm in the configured Keycloak instance.
+
+global:
+  osacDeploymentId: "osac-demo/osac"
+  services:
+    caas:
+      enabled: false
+    vmaas:
+      enabled: true
+    bmaas:
+      enabled: false
+    maas:
+      enabled: false
+
+csiDriver:
+  enabled: true
+
+operator:
+  image:
+    repository: ghcr.io/osac-project/osac-operator
+    tag: latest
+    pullPolicy: Always
+  provisioning:
+    provider: "aap"
+  aap:
+    insecureSkipVerify: "false"
+    tokenSecret:
+      name: osac-aap-api-token
+      key: token
+  fulfillment:
+    serverAddress: "fulfillment-internal-api:8001"
+    tokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+  controllers:
+    tenant: true
+    networking: true
+    storage: true
+  hubAccess:
+    enabled: true
+  tenants:
+  - name: shared
+  - name: osac-demo
+  # VMaaS without a physical fabric. The existing platform must supply OVN and
+  # MetalLB; OSAC only creates tenant-scoped resources through this manager.
+  networkManagers:
+    k8sManagers:
+      k8s_only:
+        enabled: true
+        capabilities: "ipv4,ipv6,dualStack"
+
+service:
+  externalHostname: "" # Set dynamically by make install-osac.
+  internalHostname: "" # Set dynamically by make install-osac.
+  variant: openshift
+  images:
+    service: ghcr.io/osac-project/fulfillment-service:main
+    envoy: ghcr.io/osac-project/envoy:v1.33.0
+  certs:
+    issuerRef:
+      kind: ClusterIssuer
+      name: default-ca
+    caBundle:
+      configMap: ca-bundle
+  auth:
+    # The external Keycloak Route and OSAC realm are set dynamically by Make.
+    emergencyServiceAccounts:
+    - admin
+    - osac-operator
+    - osac-operator-controller-manager
+    - template-publisher
+    - osac-metering
+    controllerCredentials:
+    - secret:
+        name: fulfillment-controller-credentials
+        items:
+        - key: client-id
+          param: client-id
+        - key: client-secret
+          param: client-secret
+  idp:
+    provider: keycloak
+    credentials:
+    - secret:
+        name: fulfillment-controller-credentials
+        items:
+        - key: client-id
+          param: client-id
+        - key: client-secret
+          param: client-secret
+  database:
+    connection:
+    - secret:
+        name: osac-db-config
+        items:
+        - key: url
+          param: url
+    - secret:
+        name: osac-db-client-cert
+        items:
+        - key: tls.crt
+          param: sslcert
+        - key: tls.key
+          param: sslkey
+        - key: ca.crt
+          param: sslrootcert
+  vault:
+    namespace: osac
+    kvMountPath: secret
+    lifecycleRole: lifecycle
+    lifecycleMountPath: jwt
+    keycloakClientId: osac-controller
+    keycloakAudience: osac-api
+    caBundle:
+      configMap: ca-bundle
+    credentials:
+    - secret:
+        name: fulfillment-controller-credentials
+        items:
+        - key: client-secret
+          param: client-secret
+
+ui:
+  enabled: true
+  images:
+    ui: ghcr.io/osac-project/osac-ui:v0.0.5
+  api:
+    fulfillment:
+      certs:
+        caBundle:
+          configMap: ca-bundle
+  auth:
+    certs:
+      caBundle:
+        configMap: ca-bundle
+
+# The AAP operator is external, but the AutomationController instance and its
+# bootstrap data remain specific to this OSAC namespace.
+aap:
+  aap:
+    instance:
+      enabled: true
+      name: "osac-aap"
+  bootstrap:
+    enabled: true
+    image: ghcr.io/osac-project/osac-aap:latest
+    backoffLimit: 15
+  configAsCode:
+    manifestSecret: "config-as-code-manifest-ig"
+    secret: "config-as-code-ig"
+    eeImage: "ghcr.io/osac-project/osac-aap:latest"
+    projectGitUri: "https://github.com/osac-project/osac"
+    projectGitBranch: "main"
+  instanceGroups:
+    storageFulfillment:
+      enabled: true
+
+validation:
+  enabled: true
+
+hubAccess:
+  enabled: true
+
+# Disable Kafka and the CI-only echo adapter. This demo does not need metering.
+metering:
+  enabled: false
+
+# Register the already-installed LVMS provider as the local block StorageTier.
+lvms:
+  enabled: true
+
+networkClass:
+  enabled: true
+  title: "K8s-only networking"
+  description: >-
+    VMaaS overlay without a physical fabric. VirtualNetwork/Subnet use CUDN,
+    SecurityGroup uses NetworkPolicy, ExternalIP uses MetalLB L2.
+  fabricManager: ""
+  k8sManager: "k8s_only"
+  isDefault: true

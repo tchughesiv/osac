@@ -5,15 +5,15 @@
 #
 # Usage:
 # Every deployment target requires PLATFORM, PROFILE, and NS. No exceptions.
-#   make install         PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
-#   make uninstall       PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
-#   make install-infra   PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
-#   make install-osac    PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
-#   make uninstall-osac  PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
-#   make uninstall-infra PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac
-#   make install-mcp-demo PLATFORM=openshift PROFILE=vmaas-ci NS=osac MCP_DEMO_IMAGE=<registry>/<repository>:<tag>
+#   make install         PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|vmaas-external|bmaas-ci|caas-ci|full-ci  NS=osac
+#   make uninstall       PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|vmaas-external|bmaas-ci|caas-ci|full-ci  NS=osac
+#   make install-infra   PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|vmaas-external|bmaas-ci|caas-ci|full-ci  NS=osac
+#   make install-osac    PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|vmaas-external|bmaas-ci|caas-ci|full-ci  NS=osac
+#   make uninstall-osac  PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|vmaas-external|bmaas-ci|caas-ci|full-ci  NS=osac
+#   make uninstall-infra PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|vmaas-external|bmaas-ci|caas-ci|full-ci  NS=osac
+#   make install-mcp-demo PLATFORM=openshift PROFILE=vmaas-ci|vmaas-external NS=osac MCP_DEMO_IMAGE=<registry>/<repository>:<tag>
 #   make build-mcp-demo-image MCP_DEMO_IMAGE=<registry>/<repository>:<tag> MCP_DEMO_PLATFORM=linux/amd64
-#   make seed-mcp-demo-catalog PLATFORM=openshift PROFILE=vmaas-ci NS=osac
+#   make seed-mcp-demo-catalog PLATFORM=openshift PROFILE=vmaas-ci|vmaas-external NS=osac
 #   make test            PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac  SUITE=all|fulfillment|operator|bmf
 #
 # PROFILE=dev-full (kind only) is a superset of dev: it runs the same chart-based
@@ -47,18 +47,22 @@ endif
 
 MCP_DEMO_TARGETS := install-mcp-demo seed-mcp-demo-catalog
 ifneq ($(filter $(MCP_DEMO_TARGETS),$(MAKECMDGOALS)),)
-ifneq ($(PLATFORM)/$(PROFILE),openshift/vmaas-ci)
-$(error $(MCP_DEMO_TARGETS) require PLATFORM=openshift PROFILE=vmaas-ci)
+ifeq ($(PLATFORM),openshift)
+ifeq ($(filter $(PROFILE),vmaas-ci vmaas-external),)
+$(error $(MCP_DEMO_TARGETS) require PLATFORM=openshift PROFILE=vmaas-ci or PROFILE=vmaas-external)
+endif
+else
+$(error $(MCP_DEMO_TARGETS) require PLATFORM=openshift PROFILE=vmaas-ci or PROFILE=vmaas-external)
 endif
 endif
 ifeq ($(filter $(PLATFORM),kind openshift),)
 $(error PLATFORM=$(PLATFORM) is invalid; must be kind or openshift)
 endif
 ifndef PROFILE
-$(error PROFILE is required (dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci))
+$(error PROFILE is required (dev|dev-full|vmaas-ci|vmaas-external|bmaas-ci|caas-ci|full-ci))
 endif
-ifeq ($(filter $(PROFILE),dev dev-full vmaas-ci bmaas-ci caas-ci full-ci),)
-$(error PROFILE=$(PROFILE) is invalid; must be dev, dev-full, vmaas-ci, bmaas-ci, caas-ci, or full-ci)
+ifeq ($(filter $(PROFILE),dev dev-full vmaas-ci vmaas-external bmaas-ci caas-ci full-ci),)
+$(error PROFILE=$(PROFILE) is invalid; must be dev, dev-full, vmaas-ci, vmaas-external, bmaas-ci, caas-ci, or full-ci)
 endif
 ifndef NS
 $(error NS is required (namespace for OSAC instance, e.g. NS=osac))
@@ -114,9 +118,49 @@ KIND_ARM64_CLI_IMAGE := quay.io/openshift/origin-cli:4.20.0
 # registry image. Its cluster cannot pull a developer's local Podman image.
 MCP_DEMO_IMAGE ?=
 MCP_DEMO_PLATFORM ?= linux/amd64
+ifeq ($(PROFILE),vmaas-external)
+MCP_DEMO_TENANT ?= osac-demo
+else
 MCP_DEMO_TENANT ?= osac-e2e-ci
+endif
 MCP_DEMO_STORAGE_TIER ?= local
 export MCP_DEMO_IMAGE MCP_DEMO_PLATFORM MCP_DEMO_TENANT MCP_DEMO_STORAGE_TIER
+
+# The vmaas-external profile uses existing, administrator-owned platform
+# services. These values identify the isolated OSAC realm that the installer
+# may create within the existing Keycloak instance; no Keycloak namespace,
+# instance, route, or existing realm is adopted.
+EXTERNAL_KEYCLOAK_NAMESPACE ?= keycloak
+EXTERNAL_KEYCLOAK_INSTANCE_NAME ?= keycloak
+EXTERNAL_KEYCLOAK_ROUTE_NAME ?= keycloak
+EXTERNAL_KEYCLOAK_REALM ?= osac
+EXTERNAL_CERT_ISSUER_NAME ?= default-ca
+EXTERNAL_CA_BUNDLE_CONFIGMAP ?= ca-bundle
+EXTERNAL_LVMS_STORAGE_CLASS ?= lvms-vg1
+
+ifeq ($(PROFILE),vmaas-external)
+EXTERNAL_KEYCLOAK_ROUTE_HOST = $$(oc -n "$(EXTERNAL_KEYCLOAK_NAMESPACE)" get route "$(EXTERNAL_KEYCLOAK_ROUTE_NAME)" -o jsonpath='{.spec.host}')
+EXTERNAL_INFRA_HELM_ARGS = \
+	--set keycloak.mode=external \
+	--set-string keycloak.external.namespace=$(EXTERNAL_KEYCLOAK_NAMESPACE) \
+	--set-string keycloak.external.instanceName=$(EXTERNAL_KEYCLOAK_INSTANCE_NAME) \
+	--set-string keycloak.external.realmName=$(EXTERNAL_KEYCLOAK_REALM) \
+	--set-string bundledVault.keycloakIssuerUrl="https://$(EXTERNAL_KEYCLOAK_ROUTE_HOST)/realms/$(EXTERNAL_KEYCLOAK_REALM)" \
+	--set-string certs.issuerRef.kind=ClusterIssuer \
+	--set-string certs.issuerRef.name=$(EXTERNAL_CERT_ISSUER_NAME)
+EXTERNAL_OSAC_HELM_ARGS = \
+	--set-string service.auth.issuerUrl="https://$(EXTERNAL_KEYCLOAK_ROUTE_HOST)/realms/$(EXTERNAL_KEYCLOAK_REALM)" \
+	--set-string service.idp.url="https://$(EXTERNAL_KEYCLOAK_ROUTE_HOST)" \
+	--set-string service.vault.keycloakIssuerUrl="https://$(EXTERNAL_KEYCLOAK_ROUTE_HOST)/realms/$(EXTERNAL_KEYCLOAK_REALM)" \
+	--set-string service.certs.issuerRef.kind=ClusterIssuer \
+	--set-string service.certs.issuerRef.name=$(EXTERNAL_CERT_ISSUER_NAME) \
+	--set-string service.certs.caBundle.configMap=$(EXTERNAL_CA_BUNDLE_CONFIGMAP) \
+	--set-string service.vault.caBundle.configMap=$(EXTERNAL_CA_BUNDLE_CONFIGMAP) \
+	--set-string ui.api.fulfillment.certs.caBundle.configMap=$(EXTERNAL_CA_BUNDLE_CONFIGMAP) \
+	--set-string ui.auth.certs.caBundle.configMap=$(EXTERNAL_CA_BUNDLE_CONFIGMAP) \
+	--set-string operator.certs.issuerRef.kind=ClusterIssuer \
+	--set-string operator.certs.issuerRef.name=$(EXTERNAL_CERT_ISSUER_NAME)
+endif
 
 # quay.io/openshift/origin-cli:4.20.0 has no arm64 manifest. On Apple Silicon,
 # build a compatible local image with the same tag so every chart can continue
@@ -233,6 +277,10 @@ endif
 	done
 else
 	$(eval OCP_VERSION := $(shell oc get clusterversion version -o jsonpath='{.status.desired.version}' | cut -d. -f1,2))
+ifeq ($(PROFILE),vmaas-external)
+	oc create namespace $(NS) --dry-run=client -o yaml | oc apply -f -
+	bash ./scripts/validate-external-vmaas-prerequisites.sh "$(NS)" "$(EXTERNAL_KEYCLOAK_NAMESPACE)" "$(EXTERNAL_KEYCLOAK_INSTANCE_NAME)" "$(EXTERNAL_KEYCLOAK_ROUTE_NAME)" "$(EXTERNAL_KEYCLOAK_REALM)" "$(EXTERNAL_CERT_ISSUER_NAME)" "$(EXTERNAL_CA_BUNDLE_CONFIGMAP)" "$(EXTERNAL_LVMS_STORAGE_CLASS)"
+endif
 	@bash -c 'source scripts/lib.sh && \
 		for ns in ansible-aap cert-manager-operator cert-manager openshift-storage metallb-system multicluster-engine openshift-cnv osac-kafka; do \
 			wait_for_namespace_cleanup "$$ns"; \
@@ -255,6 +303,7 @@ else
 		--set keycloak.route.hostname=keycloak-keycloak.$(DOMAIN) \
 		--set "bundledVault.keycloakIssuerUrl=https://keycloak-keycloak.$(DOMAIN)/realms/osac" \
 		$(INFRA_HELM_ARGS) \
+		$(EXTERNAL_INFRA_HELM_ARGS) \
 		--timeout 30m --wait-for-jobs \
 	|| { echo "=== osac-infra hook jobs ==="; oc get jobs,pods,cm -n osac-infra || true; oc logs -n osac-infra -l job-name=osac-infra-apply-ca-bundle --tail=200 || true; oc get deploy,endpoints,certificate -n cert-manager || true; exit 1; }
 endif
@@ -290,6 +339,9 @@ ifneq ($(PLATFORM),kind)
 	@[ -n "$(AAP_LICENSE_FILE)" ] || { echo "ERROR: AAP_LICENSE_FILE is required for PLATFORM=openshift" >&2; exit 1; }
 	@[ -f "$(AAP_LICENSE_FILE)" ] || { echo "ERROR: AAP_LICENSE_FILE not found at $(AAP_LICENSE_FILE)" >&2; exit 1; }
 	oc create namespace $(NS) --dry-run=client -o yaml | oc apply -f -
+ifeq ($(PROFILE),vmaas-external)
+	bash ./scripts/validate-external-vmaas-prerequisites.sh "$(NS)" "$(EXTERNAL_KEYCLOAK_NAMESPACE)" "$(EXTERNAL_KEYCLOAK_INSTANCE_NAME)" "$(EXTERNAL_KEYCLOAK_ROUTE_NAME)" "$(EXTERNAL_KEYCLOAK_REALM)" "$(EXTERNAL_CERT_ISSUER_NAME)" "$(EXTERNAL_CA_BUNDLE_CONFIGMAP)" "$(EXTERNAL_LVMS_STORAGE_CLASS)"
+endif
 	oc create secret generic config-as-code-manifest-ig \
 		--from-file=license.zip="$(AAP_LICENSE_FILE)" \
 		-n $(NS) --dry-run=client -o yaml | oc apply --server-side -f -
@@ -306,6 +358,7 @@ endif
 		--set-string global.osacDeploymentId=$(NS)/osac \
 		$(if $(DOMAIN),--set service.externalHostname=fulfillment-api-$(NS).$(DOMAIN) --set service.internalHostname=fulfillment-internal-api-$(NS).$(DOMAIN) --set global.clusterDomain=$(DOMAIN)) \
 		$(EXTRA_HELM_ARGS) \
+		$(EXTERNAL_OSAC_HELM_ARGS) \
 		--wait --timeout 40m
 
 .PHONY: uninstall-osac
@@ -352,12 +405,12 @@ build-mcp-demo-image: ## Build, verify, and push the MCP demo image (MCP_DEMO_IM
 install-mcp-demo: ## Install OpenShift VMaaS OSAC, push and deploy its MCP server, then seed the VM catalog
 	@./scripts/validate-mcp-demo-image.sh "$${MCP_DEMO_IMAGE}" "$${MCP_DEMO_PLATFORM}"
 	$(MAKE) install-infra PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
-		DEPS_HELM_ARGS="$(DEPS_HELM_ARGS)" INFRA_HELM_ARGS=""
+		DEPS_HELM_ARGS="$(DEPS_HELM_ARGS)" INFRA_HELM_ARGS="$(INFRA_HELM_ARGS)"
 	$(MAKE) build-mcp-demo-image MCP_DEMO_IMAGE="$${MCP_DEMO_IMAGE}" MCP_DEMO_PLATFORM="$${MCP_DEMO_PLATFORM}"
 	@domain="$$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')"; \
 		[ -n "$$domain" ] || { echo "ERROR: could not determine cluster domain" >&2; exit 1; }; \
 		$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
-			EXTRA_HELM_ARGS="--set service.mcp.enabled=true --set-string service.mcp.externalHostname=mcp-$(NS).$$domain --set service.images.service=$${MCP_DEMO_IMAGE} --set service.images.pullPolicy=Always"
+			EXTRA_HELM_ARGS="$(EXTRA_HELM_ARGS) --set service.mcp.enabled=true --set-string service.mcp.externalHostname=mcp-$(NS).$$domain --set service.images.service=$${MCP_DEMO_IMAGE} --set service.images.pullPolicy=Always"
 	$(MAKE) seed-mcp-demo-catalog PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS)
 
 .PHONY: seed-mcp-demo-catalog

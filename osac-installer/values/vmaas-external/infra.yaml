@@ -1,0 +1,72 @@
+# VMaaS demo on a shared OpenShift cluster.
+#
+# Every platform-wide dependency is deliberately external. The installer must
+# never adopt or remove the existing operator namespaces, their subscriptions,
+# or their cluster-scoped resources. `make install-infra` validates these
+# prerequisites before creating the OSAC-owned infrastructure below.
+
+# --- Existing platform operators (osac-deps) ---
+certManager:
+  enabled: false
+trustManager:
+  enabled: false
+aapOperator:
+  enabled: false
+lvms:
+  enabled: false
+metallb:
+  enabled: false
+cnv:
+  enabled: false
+mce:
+  enabled: false
+
+# --- OSAC-owned infrastructure (osac-infra) ---
+# The shared-cluster profile uses a pre-existing ClusterIssuer. It does not
+# create the global default-ca ClusterIssuer or the shared ca-bundle Bundle.
+caIssuer:
+  enabled: false
+
+# Make supplies the external Keycloak details and the discovered Route host.
+# These defaults let Helm render the profile and are intentionally limited to
+# a dedicated OSAC realm, not the realm used for cluster authentication.
+keycloak:
+  enabled: true
+  mode: external
+  devFixtures:
+    enabled: false
+  external:
+    namespace: keycloak
+    instanceName: keycloak
+    realmName: osac
+
+# The MCP demo does not use metering, so it does not need a cluster-wide Kafka
+# operator or an osac-kafka namespace.
+kafka:
+  enabled: false
+
+# Ephemeral, OSAC-owned demo dependencies. These are limited to osac-infra and
+# must not be used as a durable production deployment.
+bundledPostgres:
+  enabled: true
+  database:
+    name: service
+    user: service
+
+bundledVault:
+  enabled: true
+  devRootToken: "dev-root-token"
+  podSecurityContext:
+    runAsNonRoot: true
+  # Set dynamically to the existing Keycloak Route by the Make target.
+  keycloakIssuerUrl: ""
+
+# PostgreSQL and OpenBao use the CA included with their Certificate Secrets.
+# The application-side ca-bundle is validated separately in the requested OSAC
+# namespace and contains the platform CA plus the ClusterIssuer CA.
+certs:
+  issuerRef:
+    kind: ClusterIssuer
+    name: default-ca
+  caBundle:
+    configMap: ""

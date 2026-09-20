@@ -7,6 +7,9 @@ SEED_SCRIPT="${SCRIPT_DIR}/seed-mcp-demo-catalog.sh"
 IMAGE_VALIDATOR="${SCRIPT_DIR}/validate-mcp-demo-image.sh"
 OSAC_CHART="${INSTALLER_DIR}/charts/osac"
 VM_VALUES="${INSTALLER_DIR}/values/vmaas-ci/instance.yaml"
+EXTERNAL_VM_VALUES="${INSTALLER_DIR}/values/vmaas-external/instance.yaml"
+EXTERNAL_INFRA_VALUES="${INSTALLER_DIR}/values/vmaas-external/infra.yaml"
+EXTERNAL_VALIDATOR="${SCRIPT_DIR}/validate-external-vmaas-prerequisites.sh"
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -17,6 +20,7 @@ fail() {
 [[ -x "${IMAGE_VALIDATOR}" ]] || fail "missing executable MCP demo image validator: ${IMAGE_VALIDATOR}"
 bash -n "${SEED_SCRIPT}"
 bash -n "${IMAGE_VALIDATOR}"
+bash -n "${EXTERNAL_VALIDATOR}"
 
 "${IMAGE_VALIDATOR}" quay.io/example/fulfillment-service:mcp-demo linux/amd64
 "${IMAGE_VALIDATOR}" registry.example.test:5000/example/fulfillment-service:v1.2.3 linux/arm64
@@ -68,6 +72,33 @@ fake_bin="${tmp_dir}/bin"
 request_log="${tmp_dir}/curl.log"
 state_dir="${tmp_dir}/state"
 mkdir -p "${fake_bin}" "${state_dir}"
+
+external_bin="${tmp_dir}/external-bin"
+mkdir -p "${external_bin}"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'case "$*" in' \
+    '  "get crd "*) exit 0 ;;' \
+    '  "get clusterissuer.cert-manager.io "*) exit 0 ;;' \
+    '  "-n mcp-demo get configmap "*) printf "test CA bundle\\n" ;;' \
+    '  "-n keycloak get keycloaks.k8s.keycloak.org "*) if [[ "$*" == *jsonpath* ]]; then printf "True"; fi ;;' \
+    '  "-n keycloak get route "*) printf "sso.apps.example.test" ;;' \
+    '  "auth can-i "*) printf "yes" ;;' \
+    '  "-n openshift-cnv get hyperconverged kubevirt-hyperconverged") ;;' \
+    '  "-n openshift-storage get lvmcluster -o name") printf "lvmcluster.lvm.topolvm.io/lvms-vg1\\n" ;;' \
+    '  "get storageclass lvms-vg1") ;;' \
+    '  "-n metallb-system get ipaddresspool -o name") printf "ipaddresspool.metallb.io/default\\n" ;;' \
+    '  *) printf "unexpected external oc command: %s\\n" "$*" >&2; exit 1 ;;' \
+    'esac' >"${external_bin}/oc"
+chmod +x "${external_bin}/oc"
+
+PATH="${external_bin}:${PATH}" bash "${EXTERNAL_VALIDATOR}" \
+    mcp-demo keycloak keycloak keycloak osac default-ca ca-bundle lvms-vg1 >/dev/null
+if PATH="${external_bin}:${PATH}" bash "${EXTERNAL_VALIDATOR}" \
+    mcp-demo keycloak keycloak keycloak master default-ca ca-bundle lvms-vg1 >/dev/null 2>&1; then
+    fail "external-prerequisites validation accepted the Keycloak master realm"
+fi
 
 fake_container="${fake_bin}/container"
 container_log="${tmp_dir}/container.log"
@@ -235,14 +266,44 @@ for expected in \
         fail "OpenShift VMaaS MCP demo render is missing: ${expected}"
 done
 
+if ! external_rendered="$(helm template osac "${OSAC_CHART}" --namespace mcp-demo --values "${EXTERNAL_VM_VALUES}" \
+    --set-string service.externalHostname=fulfillment-api-mcp-demo.apps.example.test \
+    --set-string service.internalHostname=fulfillment-internal-api-mcp-demo.apps.example.test \
+    --set service.mcp.enabled=true \
+    --set-string service.mcp.externalHostname=mcp-mcp-demo.apps.example.test \
+    --set service.images.service=quay.io/example/fulfillment-service:mcp-demo \
+    --set service.images.pullPolicy=Always)"; then
+    fail "failed to render the external-prerequisites OpenShift VMaaS MCP demo chart"
+fi
+for expected in \
+    'name: fulfillment-mcp-server' \
+    'host: mcp-mcp-demo.apps.example.test' \
+    'image: quay.io/example/fulfillment-service:mcp-demo' \
+    'imagePullPolicy: Always'; do
+    rg -F -- "${expected}" <<<"${external_rendered}" >/dev/null || \
+        fail "external-prerequisites MCP demo render is missing: ${expected}"
+done
+
+if ! external_infra_rendered="$(helm template osac-infra "${INSTALLER_DIR}/charts/osac-infra" \
+    --namespace osac-infra --values "${EXTERNAL_INFRA_VALUES}")"; then
+    fail "failed to render the external-prerequisites VMaaS infrastructure chart"
+fi
+external_infra_manifest="${tmp_dir}/external-infra.yaml"
+printf '%s\n' "${external_infra_rendered}" >"${external_infra_manifest}"
+if rg -n '^kind: (ClusterIssuer|Bundle)$' "${external_infra_manifest}" >/dev/null; then
+    fail "external-prerequisites infrastructure unexpectedly renders a shared ClusterIssuer or Bundle"
+fi
+
 makefile="${INSTALLER_DIR}/Makefile"
 for expected in \
-    'require PLATFORM=openshift PROFILE=vmaas-ci' \
+    'require PLATFORM=openshift PROFILE=vmaas-ci or PROFILE=vmaas-external' \
     'build-mcp-demo-image' \
     'MCP_DEMO_PLATFORM ?= linux/amd64' \
     'validate-mcp-demo-image.sh "$${MCP_DEMO_IMAGE}" "$${MCP_DEMO_PLATFORM}"' \
     '--platform="$(2)"' \
-    'DEPS_HELM_ARGS="$(DEPS_HELM_ARGS)" INFRA_HELM_ARGS=""' \
+    'DEPS_HELM_ARGS="$(DEPS_HELM_ARGS)" INFRA_HELM_ARGS="$(INFRA_HELM_ARGS)"' \
+    'validate-external-vmaas-prerequisites.sh' \
+    'EXTERNAL_KEYCLOAK_ROUTE_HOST' \
     '$(MAKE) build-mcp-demo-image MCP_DEMO_IMAGE="$${MCP_DEMO_IMAGE}" MCP_DEMO_PLATFORM="$${MCP_DEMO_PLATFORM}"' \
     '$(CONTAINER_TOOL) push "$${MCP_DEMO_IMAGE}"' \
     'service.images.service=$${MCP_DEMO_IMAGE}' \

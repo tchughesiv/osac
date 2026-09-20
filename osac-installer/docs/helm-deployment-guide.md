@@ -1,7 +1,9 @@
 # OSAC Helm Deployment Guide
 
-Deploy OSAC on a clean connected OpenShift cluster using the three-phase
-Helm install.
+Deploy OSAC on a connected OpenShift cluster using the three-phase Helm
+install. CI profiles assume a dedicated cluster. On a shared cluster with
+existing Keycloak or platform operators, use the external-prerequisites profile
+instead of attempting Helm ownership adoption.
 
 ## Requirements
 
@@ -84,7 +86,8 @@ Each profile has two files: `infra.yaml` (infrastructure config) and `instance.y
 
 | Profile | Use case |
 |---------|----------|
-| `values/vmaas-ci/` | VMaaS CI (compute instances) |
+| `values/vmaas-ci/` | VMaaS CI on a dedicated cluster; installs and owns platform prerequisites |
+| `values/vmaas-external/` | VMaaS demo on a shared cluster; validates and reuses external prerequisites |
 | `values/caas-ci/` | CaaS CI (cluster provisioning) |
 | `values/bmaas-ci/` | BMaaS CI (bare metal) |
 | `values/dev/` | Local dev (Kind) |
@@ -185,7 +188,8 @@ realm; coordinate its eventual cleanup with the Keycloak administrator.
 
 ## Makefile Targets
 
-All targets require `PLATFORM=kind|openshift PROFILE=dev|vmaas-ci|... NS=<namespace>`.
+All targets require
+`PLATFORM=kind|openshift PROFILE=dev|vmaas-ci|vmaas-external|... NS=<namespace>`.
 
 | Target | Description |
 |--------|-------------|
@@ -201,9 +205,10 @@ All targets require `PLATFORM=kind|openshift PROFILE=dev|vmaas-ci|... NS=<namesp
 
 ### Deployment MCP VMaaS PoC on OpenShift
 
-`install-mcp-demo` is intentionally limited to
-`PLATFORM=openshift PROFILE=vmaas-ci`. It requires a dedicated cluster, an AAP
-license, and a registry image the cluster can pull:
+`install-mcp-demo` accepts `PROFILE=vmaas-ci` for a dedicated cluster and
+`PROFILE=vmaas-external` for an existing/shared cluster. The external profile
+does not adopt or manage Keycloak or platform operator namespaces. Use
+`vmaas-ci` only on a dedicated cluster:
 
 ```bash
 export REGISTRY_USER=your-registry-user
@@ -235,18 +240,19 @@ make build-mcp-demo-image \
 ```
 
 If a healthy, supported OpenShift cert-manager operator already owns the
-`cert-manager-operator` namespace, pass
-`DEPS_HELM_ARGS='--set certManager.enabled=false'` to `install-mcp-demo`. This
-prevents Helm from attempting to adopt that namespace while still allowing
-OSAC's certificates, issuer, and trust bundle to use the existing
-cert-manager APIs. It does not permit adopting other shared prerequisite
-operators.
+`cert-manager-operator` namespace, do not run the CI profile with a partial
+`DEPS_HELM_ARGS` override. Use `vmaas-external`: it requires existing
+cert-manager, AAP, CNV/CDI, LVMS, and MetalLB resources, then creates only
+OSAC-scoped resources and a separate Keycloak realm. The installer README
+contains the complete command and the required `ClusterIssuer` and CA bundle
+contract.
 
 The target does not mutate incompatible catalog data and it does not create
 tenant network prerequisites. Recreate the demo environment rather than attempt
 a migration, and choose a prepared tenant with `MCP_DEMO_TENANT` when the
-default `osac-e2e-ci` tenant is unsuitable. It deploys managed Keycloak and
-cluster prerequisites, so do not use it to adopt shared infrastructure.
+default `osac-e2e-ci` (CI) or `osac-demo` (external prerequisites) tenant is
+unsuitable. The external profile validates these prerequisites before seeding
+the catalog and never adopts existing infrastructure.
 
 Discover the route dynamically:
 

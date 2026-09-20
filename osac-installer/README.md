@@ -147,13 +147,13 @@ make install-osac  PLATFORM=openshift PROFILE=<profile> NS=<namespace>   # OSAC 
 | Variable | Description |
 |----------|-------------|
 | `PLATFORM` | `kind` or `openshift` (required) |
-| `PROFILE` | `dev`, `dev-full`, `vmaas-ci`, `bmaas-ci`, `caas-ci`, or `full-ci` (required; `dev-full` is kind only) |
+| `PROFILE` | `dev`, `dev-full`, `vmaas-ci`, `vmaas-external`, `bmaas-ci`, `caas-ci`, or `full-ci` (required; `dev-full` is kind only) |
 | `NS` | Target namespace (required) |
 | `DEPS_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac-deps` release |
 | `INFRA_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac-infra` release |
 | `EXTRA_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac` application release |
 
-#### Deployment MCP VMaaS PoC (`PLATFORM=openshift PROFILE=vmaas-ci`)
+#### Deployment MCP VMaaS PoC (`PLATFORM=openshift`)
 
 The Deployment MCP PoC demonstrates a tenant creating a virtual machine from a
 published `ComputeInstance` catalog item on OpenShift Virtualization. It is not
@@ -190,23 +190,49 @@ newly pushed image is fetched on the rollout even when the image tag is reused.
 It defaults to `linux/amd64`; set `MCP_DEMO_PLATFORM=linux/arm64` only for an
 ARM64 OpenShift cluster.
 
-If the cluster already has the supported OpenShift cert-manager operator, do
-not let Helm adopt its `cert-manager-operator` namespace. Confirm its
-`CertManager` instance and `certificates.cert-manager.io` CRD are Ready, then
-disable only the installer-owned cert-manager Subscription and namespaces:
+For a shared cluster—especially one whose Keycloak is used for cluster login—
+use `PROFILE=vmaas-external`, not a partial `DEPS_HELM_ARGS` override. The CI
+profile owns cert-manager, LVMS, MetalLB, CNV, AAP, and Keycloak; disabling only
+cert-manager does not make it safe to run on existing infrastructure.
+
+`vmaas-external` checks existing cert-manager, AAP, OpenShift
+Virtualization/CDI, LVMS, MetalLB, and Red Hat build of Keycloak resources
+before it creates any OSAC infrastructure. It creates an isolated `osac` realm
+by default and does not adopt the Keycloak namespace, Keycloak CR, Route, or
+cluster-login realm. The Keycloak Route host is retrieved automatically:
 
 ```bash
-DEPS_HELM_ARGS='--set certManager.enabled=false' \
 make install-mcp-demo \
-  PLATFORM=openshift PROFILE=vmaas-ci NS="$NS" \
+  PLATFORM=openshift PROFILE=vmaas-external NS="$NS" \
   AAP_LICENSE_FILE="$AAP_LICENSE_FILE" \
-  MCP_DEMO_IMAGE="$MCP_DEMO_IMAGE"
+  MCP_DEMO_IMAGE="$MCP_DEMO_IMAGE" \
+  MCP_DEMO_PLATFORM="$MCP_DEMO_PLATFORM"
 ```
 
-OSAC still creates its own certificate, issuer, and trust-bundle resources
-through that existing operator. Use this override only when the existing
-operator is healthy; it does not make other shared prerequisite operators safe
-to adopt.
+Before invoking it, the cluster administrator must provide a `ClusterIssuer`
+(default `default-ca`) and a `ca-bundle` ConfigMap with `bundle.pem` in the
+target namespace, plus an LVMS StorageClass (default `lvms-vg1`) and a MetalLB
+IPAddressPool. Override the defaults only when identifiers differ:
+
+```bash
+make install-mcp-demo \
+  PLATFORM=openshift PROFILE=vmaas-external NS="$NS" \
+  AAP_LICENSE_FILE="$AAP_LICENSE_FILE" \
+  MCP_DEMO_IMAGE="$MCP_DEMO_IMAGE" \
+  EXTERNAL_KEYCLOAK_NAMESPACE=keycloak \
+  EXTERNAL_KEYCLOAK_INSTANCE_NAME=keycloak \
+  EXTERNAL_KEYCLOAK_ROUTE_NAME=keycloak \
+  EXTERNAL_KEYCLOAK_REALM=osac \
+  EXTERNAL_CERT_ISSUER_NAME=default-ca \
+  EXTERNAL_CA_BUNDLE_CONFIGMAP=ca-bundle \
+  EXTERNAL_LVMS_STORAGE_CLASS=lvms-vg1
+```
+
+This external profile creates OSAC resources in `NS`, ephemeral demo
+PostgreSQL and OpenBao in `osac-infra`, and the isolated Keycloak realm/import.
+It does not create or remove cert-manager, trust-manager, AAP, LVMS, MetalLB,
+CNV, MCE, Kafka, or the existing Keycloak server. The bundled services remain
+demo-only; use durable external services for production.
 
 To build, verify, and push the image without installing OSAC, run:
 
@@ -219,7 +245,8 @@ make build-mcp-demo-image \
 It validates the required platform assets, including the AAP-published
 `ocp-virt-vm` template, then seeds only missing demo `DiskImage`, `InstanceType`,
 and `mcp-demo-compute-instance` catalog-item assets. The target defaults to
-tenant `osac-e2e-ci` and storage tier `local`; override `MCP_DEMO_TENANT` or
+tenant `osac-e2e-ci` for `vmaas-ci` and `osac-demo` for `vmaas-external`, with
+storage tier `local`; override `MCP_DEMO_TENANT` or
 `MCP_DEMO_STORAGE_TIER` only when the selected tenant
 already has exactly one ready default VirtualNetwork, Subnet, and SecurityGroup,
 and the named tier is a usable block-storage tier. The seeder never migrates an
@@ -328,10 +355,11 @@ cp values/dev/instance.yaml values/<project-name>/instance.yaml
 # Edit to match your cluster (see values file comments for guidance)
 ```
 
-Prerequisites (cert-manager, AAP, LVMS, MetalLB, CNV, MCE) are installed
-automatically by Phase 1. Each is gated by a values toggle (e.g.,
-`certManager.enabled: true`). See [prerequisites/README.md](prerequisites/README.md)
-for details on what each prerequisite provides.
+CI profiles install prerequisites (cert-manager, AAP, LVMS, MetalLB, CNV, MCE)
+during Phase 1. `vmaas-external` instead validates existing prerequisites and
+never adopts their namespaces or cluster-scoped resources. See
+[prerequisites/README.md](prerequisites/README.md) for details on what each
+prerequisite provides.
 
 #### External Red Hat build of Keycloak
 
