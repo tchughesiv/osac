@@ -344,6 +344,13 @@ Apple Silicon Kind clusters. The seed Job verifies the API certificate with the
 mounted fulfillment API CA and mints a short-lived `admin` ServiceAccount token
 for its private API requests; no helper-image registry push is required.
 
+`dev-full` creates KubeVirt VMs only when the Kind node exposes hardware
+virtualization (`devices.kubevirt.io/kvm`). A macOS Podman machine normally
+does not expose nested KVM, so it can validate the OSAC request and VM-creation
+path but the guest remains `ErrorUnschedulable` with `Insufficient
+devices.kubevirt.io/kvm`. Use a Linux host with KVM exposed to the container
+runtime for a running guest-VM validation.
+
 By default, the AWX project clones upstream `main`. When validating unmerged
 changes to `osac-aap/`, point it at a pushed branch instead:
 
