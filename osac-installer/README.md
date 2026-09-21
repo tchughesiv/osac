@@ -344,6 +344,19 @@ Apple Silicon Kind clusters. The seed Job verifies the API certificate with the
 mounted fulfillment API CA and mints a short-lived `admin` ServiceAccount token
 for its private API requests; no helper-image registry push is required.
 
+By default, the AWX project clones upstream `main`. When validating unmerged
+changes to `osac-aap/`, point it at a pushed branch instead:
+
+```bash
+make install-devstack PLATFORM=kind PROFILE=dev-full NS=osac \
+  DEVSTACK_AWX_PROJECT_URL=https://github.com/<your-fork>/osac.git \
+  DEVSTACK_AWX_PROJECT_BRANCH=<your-branch>
+```
+
+The configuration hook cleans the AWX checkout before its sync and refreshes
+the existing Kubernetes credential, so repeating this command is safe after a
+branch change or a failed project update.
+
 - **Virtualization** — Multus CNI + bridge plugin, KubeVirt (operator + CR, `l2bridge`
   binding), CDI
 - **AWX** — the open-source AAP backend the operator drives: awx-operator + instance,

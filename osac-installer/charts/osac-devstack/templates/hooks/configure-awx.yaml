@@ -47,6 +47,10 @@ spec:
         env:
         - name: NS
           value: {{ .Values.osacNamespace | quote }}
+        - name: AWX_PROJECT_URL
+          value: {{ .Values.awx.project.url | quote }}
+        - name: AWX_PROJECT_BRANCH
+          value: {{ .Values.awx.project.branch | quote }}
         volumeMounts:
         - name: scripts
           mountPath: /scripts

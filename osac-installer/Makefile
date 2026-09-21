@@ -190,6 +190,8 @@ endif
 HOST_IS_MAC := $(shell if [ "$$(uname -s)" = "Darwin" ]; then echo true; fi)
 HOST_IS_MAC_ARM := $(shell if [ "$$(uname -s)" = "Darwin" ] && { [ "$$(uname -m)" = "arm64" ] || [ "$$(sysctl -in hw.optional.arm64 2>/dev/null)" = "1" ]; }; then echo true; fi)
 KIND_ARM64_CLI_IMAGE_SCRIPT := scripts/dev-full/build-arm64-cli-image.sh
+DEVSTACK_AWX_PROJECT_URL ?= https://github.com/osac-project/osac.git
+DEVSTACK_AWX_PROJECT_BRANCH ?= main
 
 # Container tool and Kind cluster config.
 CONTAINER_TOOL ?= $(or $(shell command -v podman 2>/dev/null),$(shell command -v docker 2>/dev/null),$(error neither podman nor docker found in PATH))
@@ -421,6 +423,8 @@ endif
 		--set osacNamespace=$(NS) \
 		--set kindClusterName=$(KIND_CLUSTER_NAME) \
 		--set-string cliImage=$(DEVSTACK_CLI_TOOLS_IMAGE) \
+		--set-string awx.project.url=$(DEVSTACK_AWX_PROJECT_URL) \
+		--set-string awx.project.branch=$(DEVSTACK_AWX_PROJECT_BRANCH) \
 		--wait --timeout 30m
 
 ##@ Composite

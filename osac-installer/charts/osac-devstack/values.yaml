@@ -20,6 +20,9 @@ awx:
   enabled: true
   operatorChart: awx-operator/awx-operator
   operatorVersion: ""  # Empty = latest
+  project:
+    url: https://github.com/osac-project/osac.git
+    branch: main
   instance:
     name: awx
     serviceType: ClusterIP

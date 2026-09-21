@@ -17,6 +17,8 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
 MANIFESTS="${SCRIPT_DIR}/manifests"
 NS="${1:-${NS:-osac}}"
 AWX_PORT="${AWX_PORT:-8052}"
+AWX_PROJECT_URL="${AWX_PROJECT_URL:-https://github.com/osac-project/osac.git}"
+AWX_PROJECT_BRANCH="${AWX_PROJECT_BRANCH:-main}"
 
 log()  { echo "[+] $*"; }
 warn() { echo "[!] $*" >&2; }
@@ -103,13 +105,18 @@ configure_awx() {
   # Project from the osac mono-repo. osac-aap playbooks live under osac-aap/, and
   # AWX's Project API always clones the whole repo, so playbook paths below are
   # prefixed with osac-aap/.
-  local project_id
+  local project_id project_payload project_patch
+  project_payload=$(jq -cn \
+    --arg scm_url "${AWX_PROJECT_URL}" \
+    --arg scm_branch "${AWX_PROJECT_BRANCH}" \
+    '{name: "osac-aap", organization: 1, scm_type: "git", scm_url: $scm_url, scm_branch: $scm_branch, scm_clean: true, scm_update_on_launch: false}')
+  project_patch=$(jq -cn \
+    --arg scm_url "${AWX_PROJECT_URL}" \
+    --arg scm_branch "${AWX_PROJECT_BRANCH}" \
+    '{scm_url: $scm_url, scm_branch: $scm_branch, scm_clean: true}')
   project_id=$(curl -s -X POST "${api}/projects/" -H "Authorization: Bearer ${awx_token}" \
-    -H "Content-Type: application/json" -d '{
-      "name": "osac-aap", "organization": 1, "scm_type": "git",
-      "scm_url": "https://github.com/osac-project/osac.git",
-      "scm_branch": "main", "scm_update_on_launch": false
-    }' | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+    -H "Content-Type: application/json" -d "${project_payload}" | \
+    python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
   if [[ -z "$project_id" ]]; then
     project_id=$(curl -s -H "Authorization: Bearer ${awx_token}" "${api}/projects/?name=osac-aap" | \
       python3 -c "import json,sys; d=json.load(sys.stdin); print(d['results'][0]['id'] if d.get('results') else '')")
@@ -117,7 +124,7 @@ configure_awx() {
       # A project surviving a pre-mono-repo run may still point at the old repo.
       curl -s -X PATCH "${api}/projects/${project_id}/" -H "Authorization: Bearer ${awx_token}" \
         -H "Content-Type: application/json" \
-        -d '{"scm_url": "https://github.com/osac-project/osac.git", "scm_branch": "main"}' >/dev/null
+        -d "${project_patch}" >/dev/null
       curl -s -X POST "${api}/projects/${project_id}/update/" -H "Authorization: Bearer ${awx_token}" >/dev/null
     fi
   fi
@@ -196,18 +203,40 @@ configure_awx() {
   kubectl create clusterrolebinding awx-runner-admin --clusterrole=cluster-admin \
     --serviceaccount="${NS}:awx-runner" 2>/dev/null || true
 
-  local awx_runner_token cluster_ca cred_id
+  local awx_runner_token cluster_ca credential_inputs credential_payload credential_patch cred_id
   awx_runner_token=$(kubectl -n "${NS}" create token awx-runner --duration=87600h)
-  cluster_ca=$(kubectl config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d)
-  cred_id=$(curl -s -X POST "${api}/credentials/" -H "Authorization: Bearer ${awx_token}" \
-    -H "Content-Type: application/json" -d "{
-      \"name\": \"kind-cluster\", \"organization\": 1, \"credential_type\": 17,
-      \"inputs\": {
-        \"host\": \"https://kubernetes.default.svc.cluster.local:443\",
-        \"bearer_token\": \"${awx_runner_token}\", \"verify_ssl\": true,
-        \"ssl_ca_cert\": $(echo "${cluster_ca}" | jq -Rs .)
-      }
-    }" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
+  if [[ -r /var/run/secrets/kubernetes.io/serviceaccount/ca.crt ]]; then
+    cluster_ca=$(</var/run/secrets/kubernetes.io/serviceaccount/ca.crt)
+  else
+    cluster_ca=$(kubectl config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d)
+  fi
+  if [[ -z "${cluster_ca}" ]]; then
+    warn "Unable to determine the Kubernetes API CA certificate"
+    return 1
+  fi
+  credential_inputs=$(jq -cn \
+    --arg host 'https://kubernetes.default.svc.cluster.local:443' \
+    --arg bearer_token "${awx_runner_token}" \
+    --arg ssl_ca_cert "${cluster_ca}" \
+    '{host: $host, bearer_token: $bearer_token, verify_ssl: true, ssl_ca_cert: $ssl_ca_cert}')
+  credential_payload=$(jq -cn --argjson inputs "${credential_inputs}" \
+    '{name: "kind-cluster", organization: 1, credential_type: 17, inputs: $inputs}')
+  credential_patch=$(jq -cn --argjson inputs "${credential_inputs}" '{inputs: $inputs}')
+  cred_id=$(curl -fsS -H "Authorization: Bearer ${awx_token}" \
+    "${api}/credentials/?name=kind-cluster" | \
+    python3 -c "import json,sys; d=json.load(sys.stdin); print(d['results'][0]['id'] if d.get('results') else '')")
+  if [[ -n "${cred_id}" ]]; then
+    curl -fsS -X PATCH "${api}/credentials/${cred_id}/" -H "Authorization: Bearer ${awx_token}" \
+      -H "Content-Type: application/json" -d "${credential_patch}" >/dev/null
+  else
+    cred_id=$(curl -fsS -X POST "${api}/credentials/" -H "Authorization: Bearer ${awx_token}" \
+      -H "Content-Type: application/json" -d "${credential_payload}" | \
+      python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
+  fi
+  if [[ -z "${cred_id}" ]]; then
+    warn "Failed to create the AWX Kubernetes credential"
+    return 1
+  fi
 
   # Attach the credential to every job template.
   local templates jt_id
