@@ -41,10 +41,10 @@ operator:
   resources:
     limits:
       cpu: 500m
-      memory: 128Mi
+      memory: 512Mi
     requests:
       cpu: 10m
-      memory: 64Mi
+      memory: 128Mi
 
   # AAP connection settings. The operator uses AAP to provision infrastructure
   # resources (clusters, VMs, networks) via job templates.

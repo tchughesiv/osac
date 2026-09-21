@@ -376,8 +376,9 @@ branch change or a failed project update.
   the `osac.templates.ocp_virt_vm` template, and a `linux-vm` catalog item (shared/global
   objects). The template uses the installer-provided `local` storage tier for its boot
   disk. On Kind, that logical tier maps to the built-in `standard` local-path StorageClass;
-  it does not require LVMS or an external storage backend. Networking is per-tenant and
-  auto-provisioned, see below.
+  `provision-tenant.sh` labels that class for the single `tenant1` tenant. It does not
+  require LVMS, an external storage backend, or the tenant-storage controller. Networking
+  is per-tenant and auto-provisioned, see below.
 - **Ready-to-use tenant** — `provision-tenant.sh` creates a DB tenant (`tenant1`) via the
   private gRPC Tenants API, a matching enabled Keycloak organization, and adds the dev
   users (`tenant1_user`, `tenant1_admin`) as organization members so their tokens carry
@@ -385,8 +386,11 @@ branch change or a failed project update.
   its default VirtualNetwork + Subnet + SecurityGroup via tenant onboarding, so those are
   ready without manual seeding.
 
-The `dev-full` overlay also sets `operator.controllers.networkingProvisioning=false`
-so networking resources reconcile to READY without a real fabric (kind has none).
+The `dev-full` overlay sets `operator.controllers.networkingProvisioning=false` so
+networking resources reconcile to READY without a real fabric (Kind has none), and
+sets `operator.controllers.storage=false` because the one local tenant is bound directly
+to Kind's cluster-scoped `standard` StorageClass. This is deliberately a single-tenant
+local-development shortcut, not a storage model for a shared installation.
 
 **Prerequisites** (beyond the base tools) — enforced by `scripts/dev-full/kind-runtime.sh check`:
 

@@ -161,3 +161,56 @@ the Keycloak client; otherwise validate first with the reference client above.
 Use the narrow tools as building blocks: inspect a catalog item before creating
 a VM, report asynchronous state honestly, and delete test resources. VM Ready
 does not mean an application has been deployed.
+
+The server advertises this MCP-first workflow to compatible model hosts. For
+operations covered by these four tools, the host should use MCP rather than the
+local `osac` CLI, direct API calls, or Kubernetes commands. A host can still
+have shell access, so a prompt or host policy is required when that preference
+must be enforced rather than advised.
+
+### Codex CLI on a local Kind deployment
+
+For the local Kind demo, the MCP endpoint is
+`https://mcp.osac.localhost:8443`. The pre-registered public
+`osac-mcp-client` uses the loopback callback
+`http://127.0.0.1:6274/oauth/callback`. Add the following to
+`~/.codex/config.toml`; append it without replacing other Codex settings:
+
+```toml
+[mcp_servers.osac]
+url = "https://mcp.osac.localhost:8443"
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+default_tools_approval_mode = "prompt"
+
+[mcp_servers.osac.oauth]
+client_id = "osac-mcp-client"
+callback_url = "http://127.0.0.1:6274/oauth/callback"
+callback_port = 6274
+```
+
+Codex must trust the local Kind CA. Extract it and verify the protected-resource
+metadata before authenticating:
+
+```bash
+mkdir -p /tmp/osac-ca
+kubectl -n osac get configmap ca-bundle \
+  -o jsonpath='{.data.bundle\.pem}' \
+  > /tmp/osac-ca/ca-bundle.pem
+
+curl --cacert /tmp/osac-ca/ca-bundle.pem \
+  https://mcp.osac.localhost:8443/.well-known/oauth-protected-resource
+```
+
+Set `CODEX_CA_CERTIFICATE` for this local demo and complete the browser login
+with an OSAC user in the demo tenant:
+
+```bash
+CODEX_CA_CERTIFICATE=/tmp/osac-ca/ca-bundle.pem \
+  codex mcp login osac --scopes organization,offline_access
+```
+
+Start a new Codex session and use `/mcp` to confirm that `osac` is connected.
+The endpoint exposes the four deployment-focused tools described above. Do not
+disable TLS verification or store a user password, bearer token, or Keycloak
+admin secret in `config.toml`.

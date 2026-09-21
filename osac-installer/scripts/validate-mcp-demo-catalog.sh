@@ -18,6 +18,7 @@ KIND_DEV_FULL_VALUES="${INSTALLER_DIR}/values/dev/kind-instance-devfull.yaml"
 VIRT_NODE_SETUP="${SCRIPT_DIR}/dev-full/install-virt-node-setup.sh"
 KIND_RUNTIME="${SCRIPT_DIR}/dev-full/kind-runtime.sh"
 DEVSTACK_SEEDER="${DEVSTACK_CHART}/files/seed-catalog-simple.sh"
+DEVSTACK_TENANT_PROVISIONER="${DEVSTACK_CHART}/files/provision-tenant.sh"
 DEVSTACK_SEED_HOOK="${DEVSTACK_CHART}/templates/hooks/seed-catalog.yaml"
 DEVSTACK_NOTES="${DEVSTACK_CHART}/templates/NOTES.txt"
 COMPUTE_INSTANCE_PLAYBOOK="${INSTALLER_DIR}/../osac-aap/playbook_osac_create_compute_instance.yml"
@@ -39,6 +40,7 @@ bash -n "${EXTERNAL_VALIDATOR}"
 bash -n "${VIRT_NODE_SETUP}"
 bash -n "${KIND_RUNTIME}"
 bash -n "${DEVSTACK_SEEDER}"
+bash -n "${DEVSTACK_TENANT_PROVISIONER}"
 
 for realm_file in "${MCP_REALM_FILES[@]}"; do
     jq -e '
@@ -79,6 +81,15 @@ if rg -F 'grpcurl -plaintext' "${DEVSTACK_SEEDER}" >/dev/null; then
 fi
 rg -F 'url: "http://awx-service.osac.svc.cluster.local:80/api"' "${KIND_VALUES}" >/dev/null || \
     fail "dev-full operator must address the AWX Service in the osac namespace"
+rg -F 'storage: false' "${KIND_DEV_FULL_VALUES}" >/dev/null || \
+    fail "dev-full must disable external tenant-storage provisioning"
+for expected in \
+    'osac.openshift.io/tenant=${TENANT}' \
+    "'osac.openshift.io/storage-tier=local'" \
+    "kind_storage_class=\"standard\""; do
+    rg -F -- "${expected}" "${DEVSTACK_TENANT_PROVISIONER}" >/dev/null || \
+        fail "dev-full tenant provisioner is missing Kind StorageClass binding: ${expected}"
+done
 rg -F 'tenant_storage_class_storage_classes | length == 0' "${COMPUTE_INSTANCE_PLAYBOOK}" >/dev/null || \
     fail "compute instance workflow must skip JIT storage when a StorageClass is already resolved"
 for expected in \

@@ -94,11 +94,9 @@ configure_awx() {
     return 1
   fi
 
-  # Job templates (compute + networking).
-  local compute_extra_vars
-  compute_extra_vars="tenant_storage_classes:
-  - name: standard
-    tier: local"
+  # Job templates (compute + networking). Resolved tenant storage classes are
+  # supplied by the operator in osac_job_vars at launch; a template-level value
+  # would be ignored by the compute playbook and could mask a missing binding.
   local entry name playbook
   for entry in \
     "osac-create-compute-instance:osac-aap/playbook_osac_create_compute_instance.yml" \
@@ -108,8 +106,7 @@ configure_awx() {
       -H "Content-Type: application/json" -d "{
         \"name\": \"${name}\", \"organization\": 1, \"inventory\": ${inv_id},
         \"project\": ${project_id}, \"playbook\": \"${playbook}\",
-        \"ask_variables_on_launch\": true,
-        \"extra_vars\": $(echo "${compute_extra_vars}" | jq -Rs .)
+        \"ask_variables_on_launch\": true
       }" >/dev/null
     log "  template: ${name}"
   done

@@ -255,6 +255,12 @@ enables MCP at `https://mcp.osac.localhost:8443`. It deploys the image with
 `imagePullPolicy: Never` and restarts the MCP deployment after every build,
 so a registry and AAP license are not required for local iteration.
 
+`dev-full` uses Kind's built-in `standard` local-path StorageClass for its one
+seeded tenant (`tenant1`). The installer labels that cluster-scoped class as the
+tenant's logical `local` storage tier and disables external tenant-storage
+provisioning. This is intentional for the single-tenant local demo; do not use
+that pattern for a shared installation.
+
 If a healthy, supported OpenShift cert-manager operator already owns the
 `cert-manager-operator` namespace, do not run the CI profile with a partial
 `DEPS_HELM_ARGS` override. Use `vmaas-external`: it requires existing

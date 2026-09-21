@@ -18,8 +18,10 @@
 #   1. Create the DB tenant via the private gRPC Tenants API. Creating the tenant
 #      auto-provisions its default VirtualNetwork + Subnet + SecurityGroup (tenant
 #      onboarding), so no network seeding is needed here.
-#   2. Create a matching, enabled Keycloak organization.
-#   3. Add the dev users (default tenant1_user, tenant1_admin) as organization
+#   2. Bind Kind's built-in `standard` StorageClass to the single local tenant
+#      as the logical `local` storage tier.
+#   3. Create a matching, enabled Keycloak organization.
+#   4. Add the dev users (default tenant1_user, tenant1_admin) as organization
 #      members so their tokens carry the organization claim and they can log in to
 #      the UI and manage resources in the tenant.
 #
@@ -79,7 +81,24 @@ else
   exit 1
 fi
 
-# ── 1b. Create the subnet target namespace(s) ───────────────────────────────────
+# ── 1b. Bind the Kind StorageClass to the single local tenant ────────────────────
+# The Kind profile has no external storage backend. The ComputeInstance
+# controller resolves a StorageTier by finding a StorageClass labelled for the
+# tenant; that resolved class is passed in the AWX job's osac_job_vars and skips
+# the external-storage JIT path. This cluster-scoped binding is intentionally
+# limited to dev-full's one seeded local tenant.
+kind_storage_class="standard"
+if ! kubectl get storageclass "${kind_storage_class}" >/dev/null 2>&1; then
+  warn "  Kind StorageClass '${kind_storage_class}' was not found"
+  exit 1
+fi
+kubectl label storageclass "${kind_storage_class}" \
+  "osac.openshift.io/tenant=${TENANT}" \
+  'osac.openshift.io/storage-tier=local' \
+  --overwrite >/dev/null
+log "  StorageClass '${kind_storage_class}' bound to tenant '${TENANT}' as tier 'local'"
+
+# ── 1c. Create the subnet target namespace(s) ───────────────────────────────────
 # Each Subnet gets its own k8s namespace named after the Subnet CR: the osac-operator
 # ComputeInstance controller creates/looks for the KubeVirt VM in that
 # subnet-target namespace (osac.openshift.io/subnet-target-namespace annotation),

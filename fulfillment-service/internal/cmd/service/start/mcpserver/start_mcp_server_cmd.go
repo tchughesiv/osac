@@ -111,6 +111,14 @@ type ServerDeps struct {
 // tolerance, so the two expiration checks agree on how much slack to allow.
 const tokenExpirationLeeway = 5 * time.Second
 
+// serverInstructions guide MCP hosts toward the deployment API rather than local, bypassing interfaces.
+// Keep the first 512 characters self-contained because some MCP hosts use only that portion when selecting tools.
+const serverInstructions = "For OSAC deployment operations supported by this server, use these MCP tools rather than " +
+	"the osac CLI, direct API calls, or Kubernetes commands. List or get tenant-visible resources before creating " +
+	"a compute instance from a published catalog item. Use get_resource to report state and " +
+	"delete_compute_instance only for requested cleanup. If an operation is unsupported, say so instead of " +
+	"falling back to another OSAC interface."
+
 // run runs the `start mcp-server` command.
 func (c *runnerContext) run(cmd *cobra.Command, argv []string) error {
 	// Get the context:
@@ -258,7 +266,9 @@ func newServer(deps ServerDeps) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "osac-deployment-mcp",
 		Version: version.Get(),
-	}, nil)
+	}, &mcp.ServerOptions{
+		Instructions: serverInstructions,
+	})
 	mcp.AddTool(server, &mcp.Tool{
 		Name:         "list_resources",
 		Description:  "Lists supported OSAC deployment resources. resource_type must be one of: " + supportedResourceTypesDescription() + ".",

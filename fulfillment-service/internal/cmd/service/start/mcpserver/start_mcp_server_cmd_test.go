@@ -93,6 +93,8 @@ var _ = Describe("newServer", func() {
 		clientSession, err := client.Connect(ctx, clientTransport, nil)
 		Expect(err).ToNot(HaveOccurred())
 		DeferCleanup(func() { Expect(clientSession.Close()).To(Succeed()) })
+		Expect(clientSession.InitializeResult().Instructions).To(Equal(serverInstructions))
+		Expect(len(serverInstructions)).To(BeNumerically("<=", 512))
 
 		response, err := clientSession.ListTools(ctx, nil)
 		Expect(err).ToNot(HaveOccurred())
