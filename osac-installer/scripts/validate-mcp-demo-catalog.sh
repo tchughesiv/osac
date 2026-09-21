@@ -6,6 +6,9 @@ INSTALLER_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SEED_SCRIPT="${SCRIPT_DIR}/seed-mcp-demo-catalog.sh"
 IMAGE_VALIDATOR="${SCRIPT_DIR}/validate-mcp-demo-image.sh"
 OSAC_CHART="${INSTALLER_DIR}/charts/osac"
+DEVSTACK_CHART="${INSTALLER_DIR}/charts/osac-devstack"
+DEVSTACK_AWX_REPO=awx-operator
+DEVSTACK_AWX_REPO_URL=https://ansible-community.github.io/awx-operator-helm/
 VM_VALUES="${INSTALLER_DIR}/values/vmaas-ci/instance.yaml"
 EXTERNAL_VM_VALUES="${INSTALLER_DIR}/values/vmaas-external/instance.yaml"
 EXTERNAL_INFRA_VALUES="${INSTALLER_DIR}/values/vmaas-external/infra.yaml"
@@ -340,6 +343,19 @@ fi
 if ! helm dependency build "${OSAC_CHART}" >/dev/null; then
     fail "failed to build chart dependencies for MCP demo rendering"
 fi
+devstack_repositories="${tmp_dir}/devstack-repositories.yaml"
+if ! HELM_REPOSITORY_CONFIG="${devstack_repositories}" \
+    helm repo add "${DEVSTACK_AWX_REPO}" "${DEVSTACK_AWX_REPO_URL}" --force-update >/dev/null; then
+    fail "failed to add the devstack AWX Helm repository"
+fi
+if ! HELM_REPOSITORY_CONFIG="${devstack_repositories}" \
+    helm dependency build "${DEVSTACK_CHART}" >/dev/null; then
+    fail "failed to build devstack chart dependencies"
+fi
+if ! HELM_REPOSITORY_CONFIG="${devstack_repositories}" \
+    helm lint "${DEVSTACK_CHART}" >/dev/null; then
+    fail "failed to lint the devstack chart with its dependencies"
+fi
 
 if ! rendered="$(helm template osac "${OSAC_CHART}" --namespace mcp-demo --values "${VM_VALUES}" \
 	--set-string service.externalHostname=fulfillment-api-mcp-demo.apps.example.test \
@@ -437,6 +453,9 @@ for expected in \
     'MCP_DEMO_KIND_IMAGE ?= localhost/fulfillment-service:mcp-demo' \
     'MCP_DEMO_KIND_INFRA_HELM_ARGS ?=' \
     'MCP_DEMO_KIND_HELM_ARGS ?=' \
+    'DEVSTACK_CHART := $(CHARTS)/osac-devstack' \
+    'DEVSTACK_AWX_REPO := awx-operator' \
+    'DEVSTACK_AWX_REPO_URL := https://ansible-community.github.io/awx-operator-helm/' \
     '$(call build-fulfillment-service-image,$(MCP_DEMO_KIND_IMAGE))' \
     '$(call kind-load-image,$(MCP_DEMO_KIND_IMAGE))' \
     'DEPS_HELM_ARGS="" INFRA_HELM_ARGS="$(MCP_DEMO_KIND_INFRA_HELM_ARGS)"' \
@@ -444,6 +463,8 @@ for expected in \
     'service.mcp.externalPort=8443' \
     'service.images.pullPolicy=Never' \
     '$(MAKE) install-devstack PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS)' \
+    'helm repo add $(DEVSTACK_AWX_REPO) $(DEVSTACK_AWX_REPO_URL) --force-update' \
+    'helm dependency build $(DEVSTACK_CHART)' \
     'kubectl rollout restart deployment/fulfillment-mcp-server -n $(NS)'; do
     rg -F -- "${expected}" "${makefile}" >/dev/null || \
         fail "Kind dev-full MCP demo target is missing: ${expected}"

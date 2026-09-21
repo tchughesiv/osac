@@ -101,6 +101,9 @@ CHARTS         := charts
 DEPS_CHART     := $(CHARTS)/osac-deps
 INFRA_CHART    := $(CHARTS)/osac-infra
 OSAC_CHART     := $(CHARTS)/osac
+DEVSTACK_CHART := $(CHARTS)/osac-devstack
+DEVSTACK_AWX_REPO := awx-operator
+DEVSTACK_AWX_REPO_URL := https://ansible-community.github.io/awx-operator-helm/
 
 # Values file selection: kind uses kind-specific files, OpenShift uses profile files.
 # dev-full reuses the identical dev control-plane values, plus a small overlay that
@@ -390,7 +393,9 @@ endif
 	# Pre-install: node-level CNI setup (requires host container runtime access)
 	scripts/dev-full/install-virt-node-setup.sh $(KIND_CLUSTER_NAME)
 	# Helm install: operators + AWX + UI + seeding
-	helm upgrade --install osac-devstack charts/osac-devstack \
+	helm repo add $(DEVSTACK_AWX_REPO) $(DEVSTACK_AWX_REPO_URL) --force-update
+	helm dependency build $(DEVSTACK_CHART)
+	helm upgrade --install osac-devstack $(DEVSTACK_CHART) \
 		--namespace $(NS) --create-namespace \
 		--set osacNamespace=$(NS) \
 		--set kindClusterName=$(KIND_CLUSTER_NAME) \
@@ -490,21 +495,24 @@ endif
 sync-charts: helm-deps ## Rebuild chart dependencies (alias for helm-deps)
 
 .PHONY: helm-deps
-helm-deps: ## Build Helm chart dependencies
+helm-deps: ## Build all local Helm chart dependencies
 	helm dependency build $(OSAC_CHART)
+	helm repo add $(DEVSTACK_AWX_REPO) $(DEVSTACK_AWX_REPO_URL) --force-update
+	helm dependency build $(DEVSTACK_CHART)
 
 .PHONY: helm-lint
-helm-lint: ## Lint all charts
+helm-lint: helm-deps ## Lint all charts
 	helm lint $(DEPS_CHART)
 	helm lint $(INFRA_CHART)
-	helm dependency build $(OSAC_CHART)
 	helm lint $(OSAC_CHART)
+	helm lint $(DEVSTACK_CHART)
 
 .PHONY: helm-template
-helm-template: ## Dry-run render all templates
+helm-template: helm-deps ## Dry-run render all templates
 	helm template osac-deps $(DEPS_CHART)
 	helm template osac-infra $(INFRA_CHART)
 	helm template osac $(OSAC_CHART)
+	helm template osac-devstack $(DEVSTACK_CHART)
 
 .PHONY: helm-validate
 helm-validate: helm-lint ## Validate all charts (lint + template)
