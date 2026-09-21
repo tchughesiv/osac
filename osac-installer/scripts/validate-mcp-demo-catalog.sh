@@ -149,13 +149,13 @@ printf '%s\n' \
     'printf "%q " "$@" >>"${KIND_RUNTIME_LOG}"' \
     'printf "\n" >>"${KIND_RUNTIME_LOG}"' \
     'case "${1:-}:${2:-}" in' \
-    '  get:nodes) printf "kind-test-control-plane\n" ;;' \
+    '  get:nodes) if [[ "${KIND_RUNTIME_NODE_PRESENT:-false}" == "true" ]]; then printf "kind-test-control-plane\n"; fi ;;' \
     '  get:kubeconfig) printf "apiVersion: v1\n" ;;' \
-    '  create:cluster) printf "unexpected cluster creation\n" >&2; exit 1 ;;' \
+    '  create:cluster) ;;' \
     '  *) printf "unexpected Kind command: %s\n" "$*" >&2; exit 1 ;;' \
     'esac' >"${mac_runtime_bin}/kind"
 chmod +x "${mac_runtime_bin}/kind"
-if ! PATH="${mac_runtime_bin}:${PATH}" KIND_RUNTIME_LOG="${kind_runtime_log}" \
+if ! PATH="${mac_runtime_bin}:${PATH}" KIND_RUNTIME_LOG="${kind_runtime_log}" KIND_RUNTIME_NODE_PRESENT=true \
     bash "${KIND_RUNTIME}" create-cluster kind-test "${INSTALLER_DIR}/kind-config.yaml" "${kind_runtime_kubeconfig}" \
     >"${tmp_dir}/kind-runtime.out" 2>&1; then
     cat "${tmp_dir}/kind-runtime.out" >&2
@@ -168,6 +168,19 @@ if rg -F 'create cluster' "${kind_runtime_log}" >/dev/null; then
 fi
 rg -F 'apiVersion: v1' "${kind_runtime_kubeconfig}" >/dev/null || \
     fail "Kind runtime did not export the reused cluster kubeconfig"
+
+: >"${kind_runtime_log}"
+kind_runtime_new_kubeconfig="${tmp_dir}/kind-runtime-new.kubeconfig"
+if ! PATH="${mac_runtime_bin}:${PATH}" KIND_RUNTIME_LOG="${kind_runtime_log}" KIND_RUNTIME_NODE_PRESENT=false \
+    bash "${KIND_RUNTIME}" create-cluster kind-new "${INSTALLER_DIR}/kind-config.yaml" "${kind_runtime_new_kubeconfig}" \
+    >"${tmp_dir}/kind-runtime-new.out" 2>&1; then
+    cat "${tmp_dir}/kind-runtime-new.out" >&2
+    fail "Kind runtime did not create a cluster when Kind returned no nodes"
+fi
+rg -F 'create cluster --name kind-new' "${kind_runtime_log}" >/dev/null || \
+    fail "Kind runtime reused a cluster when Kind returned no nodes"
+rg -F 'apiVersion: v1' "${kind_runtime_new_kubeconfig}" >/dev/null || \
+    fail "Kind runtime did not export the newly created cluster kubeconfig"
 
 fake_container="${fake_bin}/container"
 container_log="${tmp_dir}/container.log"

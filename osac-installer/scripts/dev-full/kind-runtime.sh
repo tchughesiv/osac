@@ -201,7 +201,8 @@ create_cluster() {
   # Podman remote connections can return labels as a string, which makes
   # `kind get clusters` fail while the named cluster is otherwise usable.
   # Querying that cluster's nodes avoids the incompatible label template.
-  if kind_cmd get nodes --name "${name}" >/dev/null 2>&1; then
+  local nodes
+  if nodes="$(kind_cmd get nodes --name "${name}" 2>/dev/null)" && [[ -n "${nodes}" ]]; then
     log "Kind cluster '${name}' already exists, reusing it"
   else
     log "Creating kind cluster '${name}' (${KIND_PROVIDER})..."
