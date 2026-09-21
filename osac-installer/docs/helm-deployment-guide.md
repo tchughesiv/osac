@@ -198,6 +198,7 @@ All targets require
 | `make install-osac` | OSAC instance only |
 | `make build-mcp-demo-image` | Build, verify, and push the MCP image |
 | `make install-mcp-demo` | Install the OpenShift VMaaS MCP demo |
+| `make install-mcp-demo-kind` | Install the local Kind dev-full MCP demo |
 | `make seed-mcp-demo-catalog` | Seed the VMaaS catalog and tenant network |
 | `make uninstall` | Full uninstall (reverse order) |
 | `make test` | Run integration tests (SUITE= required) |
@@ -238,6 +239,21 @@ make build-mcp-demo-image \
   MCP_DEMO_IMAGE="$MCP_DEMO_IMAGE" \
   MCP_DEMO_PLATFORM="$MCP_DEMO_PLATFORM"
 ```
+
+### Local Deployment MCP PoC on Kind
+
+For a self-contained local ComputeInstance demo, use Kind `dev-full` rather
+than an OpenShift profile:
+
+```bash
+make install-mcp-demo-kind PLATFORM=kind PROFILE=dev-full NS=osac
+```
+
+The target creates or reuses the Kind cluster, builds the checkout's
+fulfillment-service image for the local architecture, loads it into Kind, and
+enables MCP at `https://mcp.osac.localhost:8443`. It deploys the image with
+`imagePullPolicy: Never` and restarts the MCP deployment after every build,
+so a registry and AAP license are not required for local iteration.
 
 If a healthy, supported OpenShift cert-manager operator already owns the
 `cert-manager-operator` namespace, do not run the CI profile with a partial

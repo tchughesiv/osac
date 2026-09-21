@@ -24,14 +24,16 @@ esac
 log() { echo "[+] $*"; }
 die() { echo "[!] $*" >&2; exit 1; }
 
-# Detect container runtime (try rootful first, then rootless)
+# Detect container runtime. Linux dev-full uses a rootful Podman-created Kind
+# cluster for KubeVirt; macOS Podman Desktop deliberately uses the invoking
+# user's machine connection, where sudo cannot reach that connection.
 if command -v podman >/dev/null 2>&1; then
   RUNTIME=podman
   export KIND_EXPERIMENTAL_PROVIDER=podman
-  # Check if cluster exists in rootful podman (created with sudo)
-  if sudo podman ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.Names}}' 2>/dev/null | grep -q "${CLUSTER_NAME}-control-plane"; then
+  # Check if the Linux cluster exists in rootful Podman (created with sudo).
+  if [[ "$(uname -s)" != "Darwin" ]] && sudo podman ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.Names}}' 2>/dev/null | grep -q "${CLUSTER_NAME}-control-plane"; then
     RUNTIME="sudo podman"
-  # Check if cluster exists in rootless podman
+  # Check the invoking user's Podman connection (including Podman Desktop).
   elif podman ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.Names}}' 2>/dev/null | grep -q "${CLUSTER_NAME}-control-plane"; then
     RUNTIME=podman
   else

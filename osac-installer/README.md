@@ -153,12 +153,10 @@ make install-osac  PLATFORM=openshift PROFILE=<profile> NS=<namespace>   # OSAC 
 | `INFRA_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac-infra` release |
 | `EXTRA_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac` application release |
 
-#### Deployment MCP VMaaS PoC (`PLATFORM=openshift`)
+#### Deployment MCP VMaaS PoC on OpenShift (`PLATFORM=openshift`)
 
 The Deployment MCP PoC demonstrates a tenant creating a virtual machine from a
-published `ComputeInstance` catalog item on OpenShift Virtualization. It is not
-a Kind target: VMaaS needs OpenShift Virtualization, CDI, LVMS storage, AAP,
-and an OpenShift cluster that can pull the demo image.
+published `ComputeInstance` catalog item on OpenShift Virtualization.
 
 Use a dedicated demo cluster. `install-mcp-demo` installs the VMaaS CI
 prerequisites and managed Keycloak; it must not be used to adopt or alter
@@ -270,6 +268,44 @@ for browser OAuth, MCP Inspector, and cleanup. A ready VM is infrastructure
 only in this phase—it does not deploy an application or configure workload
 content.
 
+#### Local Deployment MCP PoC on Kind (`PROFILE=dev-full`)
+
+For local development, use the dedicated Kind target instead of provisioning
+OpenShift VMaaS dependencies. It builds the fulfillment-service image from the
+current checkout, loads it into the Kind cluster, enables MCP at
+`https://mcp.osac.localhost:8443`, and installs the normal `dev-full` stack:
+KubeVirt, CDI, AWX, local storage, the `linux-vm` ComputeInstance catalog item,
+and the ready `tenant1` network.
+
+```bash
+make install-mcp-demo-kind PLATFORM=kind PROFILE=dev-full NS=osac
+```
+
+No registry push or AAP license is required. The image defaults to
+`localhost/fulfillment-service:mcp-demo` and is deployed with
+`imagePullPolicy: Never`; each invocation reloads the freshly built image and
+restarts the MCP deployment, so reusing the tag is safe while iterating. Set
+`MCP_DEMO_KIND_IMAGE` only when a different local image name is useful.
+
+Use the same local Keycloak users as the dev-full UI (`tenant1_user` or
+`tenant1_admin` and the `default-user-password` stored in
+`keycloak-admin-credentials`). Clients running on the workstation must trust
+the local CA:
+
+```bash
+kubectl -n osac get configmap ca-bundle -o jsonpath='{.data.bundle\.pem}' \
+  > /tmp/osac-ca-bundle.pem
+
+curl --cacert /tmp/osac-ca-bundle.pem \
+  https://mcp.osac.localhost:8443/.well-known/oauth-protected-resource
+```
+
+The Kind runtime is automatically selected on macOS; with Podman, ensure the
+Podman machine is running and `podman info` succeeds before invoking the
+target. The target uses that user-level Podman connection and does not invoke
+`sudo` on macOS. KubeVirt VM execution still depends on the runtime's nested
+virtualization support.
+
 #### Full local dev environment (`PROFILE=dev-full`, kind only)
 
 `PROFILE=dev` on kind stands up only the control plane (cert-manager,
@@ -308,12 +344,15 @@ so networking resources reconcile to READY without a real fabric (kind has none)
 
 **Prerequisites** (beyond the base tools) — enforced by `scripts/dev-full/kind-runtime.sh check`:
 
-- A **rootful** container runtime, because KubeVirt chowns `/dev/kvm`:
-  - **Linux host** — rootful podman (invoked via `sudo`) or Docker
+- A container runtime:
+  - **Linux host** — rootful Podman (invoked via `sudo`) or Docker, because
+    KubeVirt needs node-level access to `/dev/kvm`; rootless user namespaces
+    cannot perform the required device ownership change.
   - **Linux + Distrobox** — the rootful podman host socket (`/run/podman/podman.sock`);
     install the drop-in at `scripts/dev-full/manifests/podman-socket-rootful.conf`
-  - **macOS** — Docker Desktop or Podman Desktop. For Podman, start its machine and
-    verify `podman info` succeeds before installing.
+  - **macOS** — Docker Desktop or Podman Desktop. Podman uses your normal
+    user-level machine connection; no host-root Podman access is needed. Start
+    its machine and verify `podman info` succeeds before installing.
 - **`/dev/kvm`** present (Linux), **`fs.inotify.max_user_instances >= 256`**, and
   `kind`, `helm`, `kubectl`, `jq`, `curl`, `openssl`, `python3` on `PATH`
 - Override runtime detection with `KIND_EXPERIMENTAL_PROVIDER=docker|podman`

@@ -12,15 +12,16 @@
 #   make uninstall-osac  PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|vmaas-external|bmaas-ci|caas-ci|full-ci  NS=osac
 #   make uninstall-infra PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|vmaas-external|bmaas-ci|caas-ci|full-ci  NS=osac
 #   make install-mcp-demo PLATFORM=openshift PROFILE=vmaas-ci|vmaas-external NS=osac MCP_DEMO_IMAGE=<registry>/<repository>:<tag>
+#   make install-mcp-demo-kind PLATFORM=kind PROFILE=dev-full NS=osac [MCP_DEMO_KIND_IMAGE=localhost/fulfillment-service:mcp-demo]
 #   make build-mcp-demo-image MCP_DEMO_IMAGE=<registry>/<repository>:<tag> MCP_DEMO_PLATFORM=linux/amd64
 #   make seed-mcp-demo-catalog PLATFORM=openshift PROFILE=vmaas-ci|vmaas-external NS=osac
 #   make test            PLATFORM=kind|openshift  PROFILE=dev|dev-full|vmaas-ci|bmaas-ci|caas-ci|full-ci  NS=osac  SUITE=all|fulfillment|operator|bmf
 #
 # PROFILE=dev-full (kind only) is a superset of dev: it runs the same chart-based
 # control plane, then layers on the full local dev stack (KubeVirt/CDI/Multus, AWX,
-# UI, seeded catalog) via scripts/dev-full/. It needs a rootful container runtime
-# (Linux: rootful podman or Docker; macOS: Docker Desktop) and /dev/kvm on Linux —
-# see scripts/dev-full/kind-runtime.sh and README.md.
+# UI, seeded catalog) via scripts/dev-full/. Linux needs rootful Podman (or Docker)
+# and /dev/kvm for KubeVirt; macOS uses the invoking user's Docker Desktop or Podman
+# Desktop connection without sudo. See scripts/dev-full/kind-runtime.sh and README.md.
 #
 # Helm chart management (no parameters required):
 #   make helm-lint
@@ -38,7 +39,7 @@ FULFILLMENT_GINKGO_ARGS ?=
 # -- Fail-fast parameter validation ------------------------------------
 # Guards fire at parse time, gated by MAKECMDGOALS so `make help` works.
 
-ALL_TARGETS := install uninstall install-infra uninstall-infra install-osac uninstall-osac install-devstack install-mcp-demo seed-mcp-demo-catalog test
+ALL_TARGETS := install uninstall install-infra uninstall-infra install-osac uninstall-osac install-devstack install-mcp-demo install-mcp-demo-kind seed-mcp-demo-catalog test
 
 ifneq ($(filter $(ALL_TARGETS),$(MAKECMDGOALS)),)
 ifndef PLATFORM
@@ -53,6 +54,16 @@ $(error $(MCP_DEMO_TARGETS) require PLATFORM=openshift PROFILE=vmaas-ci or PROFI
 endif
 else
 $(error $(MCP_DEMO_TARGETS) require PLATFORM=openshift PROFILE=vmaas-ci or PROFILE=vmaas-external)
+endif
+endif
+
+MCP_DEMO_KIND_TARGETS := install-mcp-demo-kind
+ifneq ($(filter $(MCP_DEMO_KIND_TARGETS),$(MAKECMDGOALS)),)
+ifneq ($(PLATFORM)/$(PROFILE),kind/dev-full)
+$(error $(MCP_DEMO_KIND_TARGETS) requires PLATFORM=kind PROFILE=dev-full)
+endif
+ifneq ($(NS),osac)
+$(error $(MCP_DEMO_KIND_TARGETS) requires NS=osac because dev-full is a single local instance)
 endif
 endif
 ifeq ($(filter $(PLATFORM),kind openshift),)
@@ -118,6 +129,9 @@ KIND_ARM64_CLI_IMAGE := quay.io/openshift/origin-cli:4.20.0
 # registry image. Its cluster cannot pull a developer's local Podman image.
 MCP_DEMO_IMAGE ?=
 MCP_DEMO_PLATFORM ?= linux/amd64
+MCP_DEMO_KIND_IMAGE ?= localhost/fulfillment-service:mcp-demo
+MCP_DEMO_KIND_INFRA_HELM_ARGS ?=
+MCP_DEMO_KIND_HELM_ARGS ?=
 ifeq ($(PROFILE),vmaas-external)
 MCP_DEMO_TENANT ?= osac-demo
 else
@@ -214,7 +228,8 @@ define build-fulfillment-service-image
 			osac-csi-driver/go.mod osac-csi-driver/go.sum \
 			osac-metering/schema/go.mod osac-metering/schema/go.sum \
 			osac-metering/metering-service/go.mod osac-metering/metering-service/go.sum \
-			osac-metering/adapters/go.mod osac-metering/adapters/go.sum | \
+			osac-metering/adapters/go.mod osac-metering/adapters/go.sum \
+			osac-ui/proxy/go.mod osac-ui/proxy/go.sum | \
 		$(CONTAINER_TOOL) machine ssh -- podman build $(if $(strip $(2)),--platform="$(2)") -t $(1) -f fulfillment-service/Containerfile -; \
 	else \
 		$(CONTAINER_TOOL) build $(if $(strip $(2)),--platform="$(2)") -t $(1) -f ../fulfillment-service/Containerfile ..; \
@@ -412,6 +427,19 @@ install-mcp-demo: ## Install OpenShift VMaaS OSAC, push and deploy its MCP serve
 		$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
 			EXTRA_HELM_ARGS="$(EXTRA_HELM_ARGS) --set service.mcp.enabled=true --set-string service.mcp.externalHostname=mcp-$(NS).$$domain --set service.images.service=$${MCP_DEMO_IMAGE} --set service.images.pullPolicy=Always"
 	$(MAKE) seed-mcp-demo-catalog PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS)
+
+.PHONY: install-mcp-demo-kind
+install-mcp-demo-kind: ## Install the local Kind dev-full MCP demo using a freshly built, loaded image
+	$(MAKE) install-infra PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
+		DEPS_HELM_ARGS="" INFRA_HELM_ARGS="$(MCP_DEMO_KIND_INFRA_HELM_ARGS)"
+	$(call build-fulfillment-service-image,$(MCP_DEMO_KIND_IMAGE))
+	$(call kind-load-image,$(MCP_DEMO_KIND_IMAGE))
+	$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
+		EXTRA_HELM_ARGS="$(MCP_DEMO_KIND_HELM_ARGS) --set service.mcp.enabled=true --set-string service.mcp.externalHostname=mcp.osac.localhost --set service.mcp.externalPort=8443 --set service.images.service=$(MCP_DEMO_KIND_IMAGE) --set service.images.pullPolicy=Never"
+	$(MAKE) install-devstack PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS)
+	kubectl rollout restart deployment/fulfillment-mcp-server -n $(NS)
+	kubectl rollout status deployment/fulfillment-mcp-server -n $(NS) --timeout=5m
+	@printf 'MCP demo is ready at https://mcp.osac.localhost:8443\n'
 
 .PHONY: seed-mcp-demo-catalog
 seed-mcp-demo-catalog: ## Seed and validate the OpenShift VMaaS catalog and tenant prerequisites for the MCP PoC

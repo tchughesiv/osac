@@ -10,6 +10,9 @@ VM_VALUES="${INSTALLER_DIR}/values/vmaas-ci/instance.yaml"
 EXTERNAL_VM_VALUES="${INSTALLER_DIR}/values/vmaas-external/instance.yaml"
 EXTERNAL_INFRA_VALUES="${INSTALLER_DIR}/values/vmaas-external/infra.yaml"
 EXTERNAL_VALIDATOR="${SCRIPT_DIR}/validate-external-vmaas-prerequisites.sh"
+KIND_VALUES="${INSTALLER_DIR}/values/dev/kind-instance.yaml"
+KIND_DEV_FULL_VALUES="${INSTALLER_DIR}/values/dev/kind-instance-devfull.yaml"
+VIRT_NODE_SETUP="${SCRIPT_DIR}/dev-full/install-virt-node-setup.sh"
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -21,6 +24,7 @@ fail() {
 bash -n "${SEED_SCRIPT}"
 bash -n "${IMAGE_VALIDATOR}"
 bash -n "${EXTERNAL_VALIDATOR}"
+bash -n "${VIRT_NODE_SETUP}"
 
 "${IMAGE_VALIDATOR}" quay.io/example/fulfillment-service:mcp-demo linux/amd64
 "${IMAGE_VALIDATOR}" registry.example.test:5000/example/fulfillment-service:v1.2.3 linux/arm64
@@ -100,6 +104,38 @@ if PATH="${external_bin}:${PATH}" bash "${EXTERNAL_VALIDATOR}" \
     fail "external-prerequisites validation accepted the Keycloak master realm"
 fi
 
+mac_runtime_bin="${tmp_dir}/mac-runtime-bin"
+sudo_trace="${tmp_dir}/sudo-called"
+mkdir -p "${mac_runtime_bin}"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'case "$1" in' \
+    '  -s) printf "Darwin\\n" ;;' \
+    '  -m) printf "arm64\\n" ;;' \
+    '  *) exit 1 ;;' \
+    'esac' >"${mac_runtime_bin}/uname"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'case "$1" in' \
+    '  ps) printf "mcp-demo-control-plane\\n" ;;' \
+    '  exec) exit 0 ;;' \
+    '  *) exit 1 ;;' \
+    'esac' >"${mac_runtime_bin}/podman"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'touch "${SUDO_TRACE}"' \
+    'exit 1' >"${mac_runtime_bin}/sudo"
+chmod +x "${mac_runtime_bin}/uname" "${mac_runtime_bin}/podman" "${mac_runtime_bin}/sudo"
+if ! PATH="${mac_runtime_bin}:${PATH}" SUDO_TRACE="${sudo_trace}" \
+    bash "${VIRT_NODE_SETUP}" mcp-demo >"${tmp_dir}/mac-runtime.out" 2>&1; then
+    cat "${tmp_dir}/mac-runtime.out" >&2
+    fail "macOS dev-full node setup failed with the user's Podman connection"
+fi
+[[ ! -e "${sudo_trace}" ]] || fail "macOS dev-full node setup invoked sudo"
+rg -F 'Bridge CNI plugin installed successfully' "${tmp_dir}/mac-runtime.out" >/dev/null || \
+    fail "macOS dev-full node setup did not use the rootless Podman connection"
+
 fake_container="${fake_bin}/container"
 container_log="${tmp_dir}/container.log"
 printf '%s\n' \
@@ -136,6 +172,36 @@ fi
 if rg -F -- 'push quay.io/example/fulfillment-service:mcp-demo' "${container_log}" >/dev/null; then
     fail "MCP demo image target pushed an image with the wrong platform"
 fi
+
+mac_build_bin="${tmp_dir}/mac-build-bin"
+tar_log="${tmp_dir}/tar.log"
+mkdir -p "${mac_build_bin}"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'printf "%q " "$@" >>"${TAR_LOG}"' \
+    'printf "\n" >>"${TAR_LOG}"' >"${mac_build_bin}/tar"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'case "${1:-}" in' \
+    '  machine) cat >/dev/null ;;' \
+    '  image) [[ "${2:-}" == "inspect" ]] || exit 1; printf "linux/amd64" ;;' \
+    '  push) ;;' \
+    '  *) printf "unexpected Podman command: %s\n" "$*" >&2; exit 1 ;;' \
+    'esac' >"${mac_build_bin}/podman"
+chmod +x "${mac_build_bin}/tar" "${mac_build_bin}/podman"
+
+PATH="${mac_build_bin}:${PATH}" TAR_LOG="${tar_log}" \
+    make -C "${INSTALLER_DIR}" build-mcp-demo-image \
+        HOST_IS_MAC=true \
+        CONTAINER_TOOL="${mac_build_bin}/podman" \
+        MCP_DEMO_IMAGE=quay.io/example/fulfillment-service:mcp-demo \
+        MCP_DEMO_PLATFORM=linux/amd64 >/dev/null
+for expected in osac-ui/proxy/go.mod osac-ui/proxy/go.sum; do
+    rg -F -- "${expected}" "${tar_log}" >/dev/null || \
+        fail "macOS Podman build context is missing ${expected}"
+done
 
 printf '%s\n' \
     '#!/usr/bin/env bash' \
@@ -294,6 +360,27 @@ if rg -n '^kind: (ClusterIssuer|Bundle)$' "${external_infra_manifest}" >/dev/nul
     fail "external-prerequisites infrastructure unexpectedly renders a shared ClusterIssuer or Bundle"
 fi
 
+if ! kind_rendered="$(helm template osac "${OSAC_CHART}" --namespace osac \
+    --values "${KIND_VALUES}" --values "${KIND_DEV_FULL_VALUES}" \
+    --set service.mcp.enabled=true \
+    --set-string service.mcp.externalHostname=mcp.osac.localhost \
+    --set service.mcp.externalPort=8443 \
+    --set service.images.service=localhost/fulfillment-service:mcp-demo \
+    --set service.images.pullPolicy=Never)"; then
+    fail "failed to render the Kind dev-full MCP demo chart"
+fi
+for expected in \
+    'kind: TLSRoute' \
+    'name: fulfillment-mcp-server' \
+    '- mcp.osac.localhost' \
+    'port: 8443' \
+    'image: localhost/fulfillment-service:mcp-demo' \
+    'imagePullPolicy: Never' \
+    '--oauth-resource-url=https://mcp.osac.localhost:8443'; do
+    rg -F -- "${expected}" <<<"${kind_rendered}" >/dev/null || \
+        fail "Kind dev-full MCP demo render is missing: ${expected}"
+done
+
 makefile="${INSTALLER_DIR}/Makefile"
 for expected in \
     'require PLATFORM=openshift PROFILE=vmaas-ci or PROFILE=vmaas-external' \
@@ -314,4 +401,34 @@ for expected in \
         fail "OpenShift MCP demo target is missing: ${expected}"
 done
 
-echo "MCP VMaaS demo catalog checks passed."
+for expected in \
+    'install-mcp-demo-kind' \
+    'requires NS=osac because dev-full is a single local instance' \
+    'MCP_DEMO_KIND_IMAGE ?= localhost/fulfillment-service:mcp-demo' \
+    'MCP_DEMO_KIND_INFRA_HELM_ARGS ?=' \
+    'MCP_DEMO_KIND_HELM_ARGS ?=' \
+    '$(call build-fulfillment-service-image,$(MCP_DEMO_KIND_IMAGE))' \
+    '$(call kind-load-image,$(MCP_DEMO_KIND_IMAGE))' \
+    'DEPS_HELM_ARGS="" INFRA_HELM_ARGS="$(MCP_DEMO_KIND_INFRA_HELM_ARGS)"' \
+    'service.mcp.externalHostname=mcp.osac.localhost' \
+    'service.mcp.externalPort=8443' \
+    'service.images.pullPolicy=Never' \
+    '$(MAKE) install-devstack PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS)' \
+    'kubectl rollout restart deployment/fulfillment-mcp-server -n $(NS)'; do
+    rg -F -- "${expected}" "${makefile}" >/dev/null || \
+        fail "Kind dev-full MCP demo target is missing: ${expected}"
+done
+if make -C "${INSTALLER_DIR}" --no-print-directory -n install-mcp-demo-kind \
+    PLATFORM=kind PROFILE=dev NS=osac >"${tmp_dir}/kind-target.out" 2>&1; then
+    fail "Kind MCP demo target accepted PROFILE=dev"
+fi
+rg -F 'requires PLATFORM=kind PROFILE=dev-full' "${tmp_dir}/kind-target.out" >/dev/null || \
+    fail "Kind MCP demo target did not explain its profile requirement"
+if make -C "${INSTALLER_DIR}" --no-print-directory -n install-mcp-demo-kind \
+    PLATFORM=kind PROFILE=dev-full NS=other >"${tmp_dir}/kind-namespace.out" 2>&1; then
+    fail "Kind MCP demo target accepted a non-osac namespace"
+fi
+rg -F 'requires NS=osac because dev-full is a single local instance' "${tmp_dir}/kind-namespace.out" >/dev/null || \
+    fail "Kind MCP demo target did not explain its namespace requirement"
+
+echo "MCP demo checks passed."
