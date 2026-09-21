@@ -286,6 +286,8 @@ No registry push or AAP license is required. The image defaults to
 `imagePullPolicy: Never`; each invocation reloads the freshly built image and
 restarts the MCP deployment, so reusing the tag is safe while iterating. Set
 `MCP_DEMO_KIND_IMAGE` only when a different local image name is useful.
+The target also reuses an existing `osac-dev` cluster, so it can resume after
+a partial installation instead of recreating the local cluster.
 
 Use the same local Keycloak users as the dev-full UI (`tenant1_user` or
 `tenant1_admin` and the `default-user-password` stored in

@@ -13,6 +13,7 @@ EXTERNAL_VALIDATOR="${SCRIPT_DIR}/validate-external-vmaas-prerequisites.sh"
 KIND_VALUES="${INSTALLER_DIR}/values/dev/kind-instance.yaml"
 KIND_DEV_FULL_VALUES="${INSTALLER_DIR}/values/dev/kind-instance-devfull.yaml"
 VIRT_NODE_SETUP="${SCRIPT_DIR}/dev-full/install-virt-node-setup.sh"
+KIND_RUNTIME="${SCRIPT_DIR}/dev-full/kind-runtime.sh"
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -25,6 +26,7 @@ bash -n "${SEED_SCRIPT}"
 bash -n "${IMAGE_VALIDATOR}"
 bash -n "${EXTERNAL_VALIDATOR}"
 bash -n "${VIRT_NODE_SETUP}"
+bash -n "${KIND_RUNTIME}"
 
 "${IMAGE_VALIDATOR}" quay.io/example/fulfillment-service:mcp-demo linux/amd64
 "${IMAGE_VALIDATOR}" registry.example.test:5000/example/fulfillment-service:v1.2.3 linux/arm64
@@ -135,6 +137,34 @@ fi
 [[ ! -e "${sudo_trace}" ]] || fail "macOS dev-full node setup invoked sudo"
 rg -F 'Bridge CNI plugin installed successfully' "${tmp_dir}/mac-runtime.out" >/dev/null || \
     fail "macOS dev-full node setup did not use the rootless Podman connection"
+
+kind_runtime_log="${tmp_dir}/kind-runtime.log"
+kind_runtime_kubeconfig="${tmp_dir}/kind-runtime.kubeconfig"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'printf "%q " "$@" >>"${KIND_RUNTIME_LOG}"' \
+    'printf "\n" >>"${KIND_RUNTIME_LOG}"' \
+    'case "${1:-}:${2:-}" in' \
+    '  get:nodes) printf "kind-test-control-plane\n" ;;' \
+    '  get:kubeconfig) printf "apiVersion: v1\n" ;;' \
+    '  create:cluster) printf "unexpected cluster creation\n" >&2; exit 1 ;;' \
+    '  *) printf "unexpected Kind command: %s\n" "$*" >&2; exit 1 ;;' \
+    'esac' >"${mac_runtime_bin}/kind"
+chmod +x "${mac_runtime_bin}/kind"
+if ! PATH="${mac_runtime_bin}:${PATH}" KIND_RUNTIME_LOG="${kind_runtime_log}" \
+    bash "${KIND_RUNTIME}" create-cluster kind-test "${INSTALLER_DIR}/kind-config.yaml" "${kind_runtime_kubeconfig}" \
+    >"${tmp_dir}/kind-runtime.out" 2>&1; then
+    cat "${tmp_dir}/kind-runtime.out" >&2
+    fail "Kind runtime did not reuse an existing macOS Podman cluster"
+fi
+rg -F 'get nodes --name kind-test' "${kind_runtime_log}" >/dev/null || \
+    fail "Kind runtime did not check the named cluster's nodes before creating it"
+if rg -F 'create cluster' "${kind_runtime_log}" >/dev/null; then
+    fail "Kind runtime recreated an existing macOS Podman cluster"
+fi
+rg -F 'apiVersion: v1' "${kind_runtime_kubeconfig}" >/dev/null || \
+    fail "Kind runtime did not export the reused cluster kubeconfig"
 
 fake_container="${fake_bin}/container"
 container_log="${tmp_dir}/container.log"
