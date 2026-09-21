@@ -117,7 +117,7 @@ var _ = Describe("MCP server", func() {
 		instanceTypeResponse, err := instanceTypesClient.Create(ctx, privatev1.InstanceTypesCreateRequest_builder{
 			Object: privatev1.InstanceType_builder{
 				Metadata: privatev1.Metadata_builder{Name: fmt.Sprintf("mcp-instance-type-%s", uuid.New()[24:32])}.Build(),
-				Spec:     privatev1.InstanceTypeSpec_builder{Cores: 2, MemoryGib: 4}.Build(),
+				Spec:     privatev1.InstanceTypeSpec_builder{Vcpus: 2, MemoryGib: 4}.Build(),
 			}.Build(),
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
@@ -264,6 +264,13 @@ var _ = Describe("MCP server", func() {
 		Expect(err).ToNot(HaveOccurred())
 		handler, err := mcpserver.NewHandler(mcpserver.ServerDeps{
 			ComputeInstanceCatalogItemsClient: publicv1.NewComputeInstanceCatalogItemsClient(mcpGrpcConn),
+			ComputeInstanceTemplatesClient:    publicv1.NewComputeInstanceTemplatesClient(mcpGrpcConn),
+			InstanceTypesClient:               publicv1.NewInstanceTypesClient(mcpGrpcConn),
+			DiskImagesClient:                  publicv1.NewDiskImagesClient(mcpGrpcConn),
+			StorageTiersClient:                publicv1.NewStorageTiersClient(mcpGrpcConn),
+			VirtualNetworksClient:             publicv1.NewVirtualNetworksClient(mcpGrpcConn),
+			SubnetsClient:                     publicv1.NewSubnetsClient(mcpGrpcConn),
+			SecurityGroupsClient:              publicv1.NewSecurityGroupsClient(mcpGrpcConn),
 			ComputeInstancesClient:            publicv1.NewComputeInstancesClient(mcpGrpcConn),
 		}, jwtValidator, "", "")
 		Expect(err).ToNot(HaveOccurred())
@@ -347,24 +354,47 @@ var _ = Describe("MCP server", func() {
 		Expect(err).ToNot(HaveOccurred())
 		defer func() { Expect(session.Close()).To(Succeed()) }()
 
-		listOutput, err := callMCPTool[mcpserver.ListResourcesOutput](ctx, session, "list_resources", mcpserver.ListResourcesInput{
-			ResourceType: mcpserver.ResourceTypeComputeInstanceCatalogItem,
-			Filter:       fmt.Sprintf("this.id == %q", catalogItemID),
+		assertDiscoverable := func(resourceType mcpserver.ResourceType, id string) map[string]any {
+			listOutput, err := callMCPTool[mcpserver.ListResourcesOutput](ctx, session, "list_resources", mcpserver.ListResourcesInput{
+				ResourceType: resourceType,
+				Filter:       fmt.Sprintf("this.id == %q", id),
+			})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(listOutput.Items).To(HaveLen(1))
+			Expect(listOutput.Items[0].ID).To(Equal(id))
+
+			resource, err := callMCPTool[mcpserver.GetResourceOutput](ctx, session, "get_resource", mcpserver.GetResourceInput{
+				ResourceType: resourceType,
+				ID:           id,
+			})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(resource.Resource).To(HaveKeyWithValue("id", id))
+			return resource.Resource
+		}
+
+		catalogItem := assertDiscoverable(mcpserver.ResourceTypeComputeInstanceCatalogItem, catalogItemID)
+		Expect(catalogItem).To(HaveKeyWithValue("title", "MCP compute instance"))
+		template := assertDiscoverable(mcpserver.ResourceTypeComputeInstanceTemplate, templateID)
+		specDefaults, ok := template["specDefaults"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		bootDisk, ok := specDefaults["bootDisk"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		storageTier, ok := bootDisk["storageTier"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		Expect(storageTier).To(HaveKeyWithValue("id", storageTierID))
+		assertDiscoverable(mcpserver.ResourceTypeInstanceType, instanceTypeID)
+		assertDiscoverable(mcpserver.ResourceTypeDiskImage, diskImageID)
+		assertDiscoverable(mcpserver.ResourceTypeStorageTier, storageTierID)
+		assertDiscoverable(mcpserver.ResourceTypeVirtualNetwork, virtualNetworkID)
+		assertDiscoverable(mcpserver.ResourceTypeSubnet, subnetID)
+		_, err = callMCPTool[mcpserver.ListResourcesOutput](ctx, session, "list_resources", mcpserver.ListResourcesInput{
+			ResourceType: mcpserver.ResourceTypeSecurityGroup,
+			PageSize:     1,
 		})
 		Expect(err).ToNot(HaveOccurred())
-		Expect(listOutput.Items).To(HaveLen(1))
-		Expect(listOutput.Items[0].ID).To(Equal(catalogItemID))
 
-		catalogItem, err := callMCPTool[mcpserver.GetResourceOutput](ctx, session, "get_resource", mcpserver.GetResourceInput{
-			ResourceType: mcpserver.ResourceTypeComputeInstanceCatalogItem,
-			ID:           catalogItemID,
-		})
-		Expect(err).ToNot(HaveOccurred())
-		Expect(catalogItem.Resource).To(HaveKeyWithValue("id", catalogItemID))
-		Expect(catalogItem.Resource).To(HaveKeyWithValue("title", "MCP compute instance"))
-
-		created, err := callMCPTool[mcpserver.CreateComputeInstanceFromCatalogItemOutput](
-			ctx, session, "create_compute_instance_from_catalog_item", mcpserver.CreateComputeInstanceFromCatalogItemInput{
+		created, err := callMCPTool[mcpserver.CreateComputeInstanceOutput](
+			ctx, session, "create_compute_instance", mcpserver.CreateComputeInstanceInput{
 				Name:        fmt.Sprintf("mcp-compute-instance-%s", uuid.New()[24:32]),
 				CatalogItem: catalogItemID,
 			},

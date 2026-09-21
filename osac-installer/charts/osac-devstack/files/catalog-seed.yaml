@@ -27,6 +27,8 @@ templates:
     specDefaults:
       bootDisk:
         sizeGib: 10
+        storageTier:
+          name: local
       runStrategy: Always
 
 catalogItems:

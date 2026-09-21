@@ -97,6 +97,13 @@ type runnerContext struct {
 // ServerDeps contains the downstream clients used by MCP tool handlers.
 type ServerDeps struct {
 	ComputeInstanceCatalogItemsClient publicv1.ComputeInstanceCatalogItemsClient
+	ComputeInstanceTemplatesClient    publicv1.ComputeInstanceTemplatesClient
+	InstanceTypesClient               publicv1.InstanceTypesClient
+	DiskImagesClient                  publicv1.DiskImagesClient
+	StorageTiersClient                publicv1.StorageTiersClient
+	VirtualNetworksClient             publicv1.VirtualNetworksClient
+	SubnetsClient                     publicv1.SubnetsClient
+	SecurityGroupsClient              publicv1.SecurityGroupsClient
 	ComputeInstancesClient            publicv1.ComputeInstancesClient
 }
 
@@ -189,6 +196,13 @@ func (c *runnerContext) run(cmd *cobra.Command, argv []string) error {
 	// Build the MCP server and wrap it with bearer-token authentication:
 	handler, err := NewHandler(ServerDeps{
 		ComputeInstanceCatalogItemsClient: publicv1.NewComputeInstanceCatalogItemsClient(grpcClient),
+		ComputeInstanceTemplatesClient:    publicv1.NewComputeInstanceTemplatesClient(grpcClient),
+		InstanceTypesClient:               publicv1.NewInstanceTypesClient(grpcClient),
+		DiskImagesClient:                  publicv1.NewDiskImagesClient(grpcClient),
+		StorageTiersClient:                publicv1.NewStorageTiersClient(grpcClient),
+		VirtualNetworksClient:             publicv1.NewVirtualNetworksClient(grpcClient),
+		SubnetsClient:                     publicv1.NewSubnetsClient(grpcClient),
+		SecurityGroupsClient:              publicv1.NewSecurityGroupsClient(grpcClient),
 		ComputeInstancesClient:            publicv1.NewComputeInstancesClient(grpcClient),
 	}, jwtValidator, c.args.oauthAuthorizationServer, c.args.oauthResourceURL)
 	if err != nil {
@@ -240,28 +254,29 @@ func (c *runnerContext) run(cmd *cobra.Command, argv []string) error {
 
 // newServer creates the MCP server and registers its tools.
 func newServer(deps ServerDeps) *mcp.Server {
+	resources := newResourceRegistry(deps)
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "osac-deployment-mcp",
 		Version: version.Get(),
 	}, nil)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:         "list_resources",
-		Description:  "Lists supported OSAC resources. resource_type must be compute_instance_catalog_item or compute_instance.",
+		Description:  "Lists supported OSAC deployment resources. resource_type must be one of: " + supportedResourceTypesDescription() + ".",
 		InputSchema:  resourceToolSchema[ListResourcesInput](),
 		OutputSchema: compatibleToolSchema[ListResourcesOutput](),
-	}, handleListResources(deps.ComputeInstanceCatalogItemsClient, deps.ComputeInstancesClient))
+	}, handleListResources(resources))
 	mcp.AddTool(server, &mcp.Tool{
 		Name:         "get_resource",
-		Description:  "Gets a supported OSAC resource by ID. resource_type must be compute_instance_catalog_item or compute_instance.",
+		Description:  "Gets a supported OSAC deployment resource by ID. resource_type must be one of: " + supportedResourceTypesDescription() + ".",
 		InputSchema:  resourceToolSchema[GetResourceInput](),
 		OutputSchema: compatibleToolSchema[GetResourceOutput](),
-	}, handleGetResource(deps.ComputeInstanceCatalogItemsClient, deps.ComputeInstancesClient))
+	}, handleGetResource(resources))
 	mcp.AddTool(server, &mcp.Tool{
-		Name:         "create_compute_instance_from_catalog_item",
+		Name:         "create_compute_instance",
 		Description:  "Creates a compute instance from a published compute instance catalog item.",
-		InputSchema:  compatibleToolSchema[CreateComputeInstanceFromCatalogItemInput](),
-		OutputSchema: compatibleToolSchema[CreateComputeInstanceFromCatalogItemOutput](),
-	}, handleCreateComputeInstanceFromCatalogItem(deps.ComputeInstancesClient))
+		InputSchema:  compatibleToolSchema[CreateComputeInstanceInput](),
+		OutputSchema: compatibleToolSchema[CreateComputeInstanceOutput](),
+	}, handleCreateComputeInstance(deps.ComputeInstancesClient))
 	mcp.AddTool(server, &mcp.Tool{
 		Name:         "delete_compute_instance",
 		Description:  "Deletes a compute instance by ID.",
@@ -309,10 +324,11 @@ func resourceToolSchema[T any]() json.RawMessage {
 	if !ok {
 		panic("resource tool schema has no resource_type property")
 	}
-	resourceType["enum"] = []string{
-		string(ResourceTypeComputeInstanceCatalogItem),
-		string(ResourceTypeComputeInstance),
+	resourceTypes := make([]string, len(supportedResourceTypes))
+	for i, resourceType := range supportedResourceTypes {
+		resourceTypes[i] = string(resourceType)
 	}
+	resourceType["enum"] = resourceTypes
 	encoded, err := json.Marshal(document)
 	if err != nil {
 		panic(fmt.Errorf("encode resource tool schema: %w", err))

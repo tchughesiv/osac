@@ -80,7 +80,12 @@
           when: _jit_storage_tiers | length == 0
 
     - name: Ensure storage is provisioned for tenant (JIT)
-      when: _jit_storage_tiers is defined and _jit_storage_tiers | length > 0
+      # The operator may already have resolved a StorageClass for the requested
+      # tier. In that case it is authoritative, so do not dispatch a provider
+      # workflow merely because tier definitions are also available.
+      when:
+        - tenant_storage_class_storage_classes | length == 0
+        - _jit_storage_tiers is defined and _jit_storage_tiers | length > 0
       ansible.builtin.include_role:
         name: osac.service.storage_provider
       vars:

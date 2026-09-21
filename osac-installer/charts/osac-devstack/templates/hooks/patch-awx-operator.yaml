@@ -1,18 +1,21 @@
 {{- if .Values.awx.enabled }}
 ---
-# Regular Job (not a hook) to patch AWX operator kube-rbac-proxy image
+# Regular Job (not a hook) to patch AWX operator kube-rbac-proxy image.
 # The upstream awx-operator chart v2.19.1 references a non-existent gcr.io image.
-# This Job runs immediately as part of chart installation, not as a post-install hook,
-# so it can patch the deployment before Helm --wait checks pod readiness.
+# Its revision-specific name makes Helm create a new Job on every upgrade: Helm
+# reapplies the dependency's broken Deployment first, and a completed fixed-name
+# Job would otherwise not run again. It is deliberately not a post-upgrade hook,
+# because Helm --wait waits for the broken Deployment before running those hooks.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "osac-devstack.fullname" . }}-patch-awx-operator
+  name: {{ include "osac-devstack.fullname" . }}-patch-awx-operator-r{{ .Release.Revision }}
   namespace: {{ .Values.osacNamespace }}
   labels:
     {{- include "osac-devstack.labels" . | nindent 4 }}
     job: patch-awx-operator
 spec:
+  ttlSecondsAfterFinished: 3600
   template:
     metadata:
       labels:

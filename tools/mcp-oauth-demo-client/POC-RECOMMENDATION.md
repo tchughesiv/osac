@@ -16,7 +16,7 @@ administrator identity.
 - `list_resources`: list ComputeInstance catalog items or ComputeInstances
   from an explicit allowlist.
 - `get_resource`: get one allowlisted resource by ID.
-- `create_compute_instance_from_catalog_item`: create a VM from a published,
+- `create_compute_instance`: create a VM from a published,
   policy-controlled offering.
 - `delete_compute_instance`: delete a VM by ID.
 

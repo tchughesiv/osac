@@ -135,6 +135,11 @@ MCP_DEMO_PLATFORM ?= linux/amd64
 MCP_DEMO_KIND_IMAGE ?= localhost/fulfillment-service:mcp-demo
 MCP_DEMO_KIND_INFRA_HELM_ARGS ?=
 MCP_DEMO_KIND_HELM_ARGS ?=
+# dev-full hooks use grpcurl as well as kubectl, curl, jq, and Python. Build a
+# native helper image locally and load it into Kind rather than relying on a
+# developer to publish or pre-pull one.
+DEVSTACK_CLI_TOOLS_IMAGE ?= localhost/osac-devstack-cli-tools:dev
+DEVSTACK_CLI_TOOLS_ARCH ?= $(shell arch="$$(uname -m)"; if [ "$$arch" = x86_64 ]; then echo amd64; elif [ "$$arch" = aarch64 ] || [ "$$arch" = arm64 ]; then echo arm64; else echo "$$arch"; fi)
 ifeq ($(PROFILE),vmaas-external)
 MCP_DEMO_TENANT ?= osac-demo
 else
@@ -199,10 +204,11 @@ else
 KIND_KUBECONFIG := $(HOME)/.kube/$(KIND_CLUSTER_NAME)-kind.kubeconfig
 endif
 ifeq ($(PLATFORM),kind)
-# Use the caller's KUBECONFIG if they set a non-empty one, otherwise the kind file.
-# `?=` is not enough: a shell that exports KUBECONFIG= (empty-but-defined) would keep
-# it empty and helm/kubectl would fall back to localhost:8080. `$(or ...)` skips empty.
-export KUBECONFIG := $(or $(KUBECONFIG),$(KIND_KUBECONFIG))
+# The Kind runtime writes this file when it creates or reuses the local cluster.
+# Always select it: a workstation may still export KUBECONFIG for a remote
+# OpenShift cluster, and Helm otherwise upgrades that unrelated cluster.
+# Set KIND_KUBECONFIG explicitly when a non-default local path is needed.
+export KUBECONFIG := $(KIND_KUBECONFIG)
 endif
 
 define kind-load-image
@@ -236,6 +242,18 @@ define build-fulfillment-service-image
 		$(CONTAINER_TOOL) machine ssh -- podman build $(if $(strip $(2)),--platform="$(2)") -t $(1) -f fulfillment-service/Containerfile -; \
 	else \
 		$(CONTAINER_TOOL) build $(if $(strip $(2)),--platform="$(2)") -t $(1) -f ../fulfillment-service/Containerfile ..; \
+	fi
+endef
+
+# Build the dev-full hook image for the Kind node's native architecture. The
+# macOS Podman machine needs a streamed context for the same reason as the
+# fulfillment-service image build above.
+define build-devstack-cli-tools-image
+	@if [ "$(HOST_IS_MAC)" = "true" ] && [ "$$(basename $(CONTAINER_TOOL))" = "podman" ]; then \
+		tar -C $(DEVSTACK_CHART) -cf - Containerfile.cli-tools | \
+		$(CONTAINER_TOOL) machine ssh -- podman build --build-arg TARGETARCH="$(2)" -t $(1) -f Containerfile.cli-tools -; \
+	else \
+		$(CONTAINER_TOOL) build --build-arg TARGETARCH="$(2)" -t $(1) -f $(DEVSTACK_CHART)/Containerfile.cli-tools $(DEVSTACK_CHART); \
 	fi
 endef
 
@@ -392,6 +410,9 @@ ifneq ($(PLATFORM)/$(PROFILE),kind/dev-full)
 endif
 	# Pre-install: node-level CNI setup (requires host container runtime access)
 	scripts/dev-full/install-virt-node-setup.sh $(KIND_CLUSTER_NAME)
+	# Build and load the native helper used by catalog, tenant, and AWX hook Jobs.
+	$(call build-devstack-cli-tools-image,$(DEVSTACK_CLI_TOOLS_IMAGE),$(DEVSTACK_CLI_TOOLS_ARCH))
+	$(call kind-load-image,$(DEVSTACK_CLI_TOOLS_IMAGE))
 	# Helm install: operators + AWX + UI + seeding
 	helm repo add $(DEVSTACK_AWX_REPO) $(DEVSTACK_AWX_REPO_URL) --force-update
 	helm dependency build $(DEVSTACK_CHART)
@@ -399,6 +420,7 @@ endif
 		--namespace $(NS) --create-namespace \
 		--set osacNamespace=$(NS) \
 		--set kindClusterName=$(KIND_CLUSTER_NAME) \
+		--set-string cliImage=$(DEVSTACK_CLI_TOOLS_IMAGE) \
 		--wait --timeout 30m
 
 ##@ Composite

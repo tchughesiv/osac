@@ -106,9 +106,9 @@ var _ = Describe("newServer", func() {
 		}
 		Expect(tools).To(HaveKey("list_resources"))
 		Expect(tools).To(HaveKey("get_resource"))
-		Expect(tools).To(HaveKey("create_compute_instance_from_catalog_item"))
+		Expect(tools).To(HaveKey("create_compute_instance"))
 		Expect(tools).To(HaveKey("delete_compute_instance"))
-		expectNullableArraySchema(tools["create_compute_instance_from_catalog_item"].InputSchema, "set")
+		expectNullableArraySchema(tools["create_compute_instance"].InputSchema, "set")
 		expectNullableArraySchema(tools["list_resources"].OutputSchema, "items")
 		expectResourceTypeSchema(tools["list_resources"].InputSchema)
 		expectResourceTypeSchema(tools["get_resource"].InputSchema)
@@ -145,6 +145,13 @@ func expectResourceTypeSchema(schema any) {
 	Expect(ok).To(BeTrue())
 	Expect(resourceType["enum"]).To(ConsistOf(
 		string(ResourceTypeComputeInstanceCatalogItem),
+		string(ResourceTypeComputeInstanceTemplate),
+		string(ResourceTypeInstanceType),
+		string(ResourceTypeDiskImage),
+		string(ResourceTypeStorageTier),
+		string(ResourceTypeVirtualNetwork),
+		string(ResourceTypeSubnet),
+		string(ResourceTypeSecurityGroup),
 		string(ResourceTypeComputeInstance),
 	))
 }

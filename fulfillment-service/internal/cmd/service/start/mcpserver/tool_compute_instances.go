@@ -23,13 +23,16 @@ import (
 	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
 )
 
-type CreateComputeInstanceFromCatalogItemInput struct {
+// CreateComputeInstanceInput creates a compute instance from a published catalog item.
+// The catalog item is intentionally required in this MCP phase so the server can
+// enforce its policy-controlled defaults and permitted overrides.
+type CreateComputeInstanceInput struct {
 	Name        string   `json:"name" jsonschema:"name for the new compute instance"`
 	CatalogItem string   `json:"catalog_item" jsonschema:"ID of the compute instance catalog item"`
 	Set         []string `json:"set,omitempty" jsonschema:"optional key=value field overrides governed by the catalog item"`
 }
 
-type CreateComputeInstanceFromCatalogItemOutput struct {
+type CreateComputeInstanceOutput struct {
 	ID    string `json:"id"`
 	State string `json:"state"`
 }
@@ -42,18 +45,18 @@ type DeleteComputeInstanceOutput struct {
 	ID string `json:"id"`
 }
 
-func handleCreateComputeInstanceFromCatalogItem(
+func handleCreateComputeInstance(
 	client publicv1.ComputeInstancesClient,
-) mcp.ToolHandlerFor[CreateComputeInstanceFromCatalogItemInput, CreateComputeInstanceFromCatalogItemOutput] {
+) mcp.ToolHandlerFor[CreateComputeInstanceInput, CreateComputeInstanceOutput] {
 	return func(
-		ctx context.Context, req *mcp.CallToolRequest, input CreateComputeInstanceFromCatalogItemInput,
-	) (*mcp.CallToolResult, CreateComputeInstanceFromCatalogItemOutput, error) {
+		ctx context.Context, req *mcp.CallToolRequest, input CreateComputeInstanceInput,
+	) (*mcp.CallToolResult, CreateComputeInstanceOutput, error) {
 		ctx = forwardToken(ctx, req)
 		spec := publicv1.ComputeInstanceSpec_builder{
 			CatalogItem: publicv1.ComputeInstanceCatalogItemReference_builder{Id: input.CatalogItem}.Build(),
 		}.Build()
 		if err := fieldutil.ApplyFields(spec, input.Set); err != nil {
-			return nil, CreateComputeInstanceFromCatalogItemOutput{}, fmt.Errorf("failed to apply field overrides: %w", err)
+			return nil, CreateComputeInstanceOutput{}, fmt.Errorf("failed to apply field overrides: %w", err)
 		}
 		response, err := client.Create(ctx, publicv1.ComputeInstancesCreateRequest_builder{
 			Object: publicv1.ComputeInstance_builder{
@@ -62,10 +65,10 @@ func handleCreateComputeInstanceFromCatalogItem(
 			}.Build(),
 		}.Build())
 		if err != nil {
-			return nil, CreateComputeInstanceFromCatalogItemOutput{}, fmt.Errorf("failed to create compute instance: %w", err)
+			return nil, CreateComputeInstanceOutput{}, fmt.Errorf("failed to create compute instance: %w", err)
 		}
 		created := response.GetObject()
-		return nil, CreateComputeInstanceFromCatalogItemOutput{
+		return nil, CreateComputeInstanceOutput{
 			ID:    created.GetId(),
 			State: created.GetStatus().GetState().String(),
 		}, nil

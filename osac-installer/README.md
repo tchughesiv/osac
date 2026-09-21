@@ -260,9 +260,13 @@ printf '%s\n' "$MCP_URL"
 ```
 
 The four MCP tools are `list_resources`, `get_resource`,
-`create_compute_instance_from_catalog_item`, and `delete_compute_instance`.
-The read tools explicitly allow only `compute_instance_catalog_item` and
-`compute_instance`; they are not a generic fulfillment API proxy. See the
+`create_compute_instance`, and `delete_compute_instance`.
+The two generic read tools expose the deployment resources needed to understand
+an offering before creating a VM: `compute_instance_catalog_item`,
+`compute_instance_template`, `instance_type`, `disk_image`, `storage_tier`,
+`virtual_network`, `subnet`, `security_group`, and `compute_instance`. They are
+not a generic fulfillment API proxy: every request is authorized as the calling
+tenant and the server forwards that tenant's bearer token to fulfillment. See the
 [`mcp-oauth-demo-client` runbook](../tools/mcp-oauth-demo-client/RUNBOOK.md)
 for browser OAuth, MCP Inspector, and cleanup. A ready VM is infrastructure
 only in this phase—it does not deploy an application or configure workload
@@ -274,7 +278,8 @@ For local development, use the dedicated Kind target instead of provisioning
 OpenShift VMaaS dependencies. It builds the fulfillment-service image from the
 current checkout, loads it into the Kind cluster, enables MCP at
 `https://mcp.osac.localhost:8443`, and installs the normal `dev-full` stack:
-KubeVirt, CDI, AWX, local storage, the `linux-vm` ComputeInstance catalog item,
+KubeVirt, CDI, AWX, a logical `local` storage tier backed by Kind's `standard`
+local-path StorageClass, the `linux-vm` ComputeInstance catalog item,
 and the ready `tenant1` network.
 
 ```bash
@@ -289,7 +294,14 @@ restarts the MCP deployment, so reusing the tag is safe while iterating. Set
 The target also reuses an existing `osac-dev` cluster, so it can resume after
 a partial installation instead of recreating the local cluster. It also builds
 the devstack's AWX Helm dependency automatically, including registering the
-required Helm repository; no separate Helm setup command is needed.
+required Helm repository; no separate Helm setup command is needed. It also
+builds and loads a native local helper image containing `grpcurl`, which the
+catalog and tenant hook Jobs need; no registry push is required.
+The catalog seed Job mounts the fulfillment API CA and uses verified TLS for
+the internal gRPC endpoint; it does not use plaintext or disable certificate
+verification. Its `devstack-admin` ServiceAccount mints a short-lived token
+for the existing `admin` ServiceAccount, which is configured as the local
+private-API administrator; no credential is stored in the chart.
 
 Use the same local Keycloak users as the dev-full UI (`tenant1_user` or
 `tenant1_admin` and the `default-user-password` stored in
@@ -325,6 +337,13 @@ make install PLATFORM=kind PROFILE=dev-full NS=osac
 On top of `dev`, `dev-full` adds (via `scripts/dev-full/`, orchestrated by the
 `install-devstack` target):
 
+`install-devstack` builds and loads a native local helper image for its hook
+Jobs. It includes `grpcurl` in addition to the Kubernetes CLI tools, so the
+catalog seed uses the fulfillment internal gRPC API reliably on both amd64 and
+Apple Silicon Kind clusters. The seed Job verifies the API certificate with the
+mounted fulfillment API CA and mints a short-lived `admin` ServiceAccount token
+for its private API requests; no helper-image registry push is required.
+
 - **Virtualization** — Multus CNI + bridge plugin, KubeVirt (operator + CR, `l2bridge`
   binding), CDI
 - **AWX** — the open-source AAP backend the operator drives: awx-operator + instance,
@@ -335,7 +354,10 @@ On top of `dev`, `dev-full` adds (via `scripts/dev-full/`, orchestrated by the
   unusable on kind) and routed through the shared Envoy Gateway
 - **Seeded catalog** — a `fedora` disk image, `u1-small/medium/large` instance types,
   the `osac.templates.ocp_virt_vm` template, and a `linux-vm` catalog item (shared/global
-  objects; networking is per-tenant and auto-provisioned, see below)
+  objects). The template uses the installer-provided `local` storage tier for its boot
+  disk. On Kind, that logical tier maps to the built-in `standard` local-path StorageClass;
+  it does not require LVMS or an external storage backend. Networking is per-tenant and
+  auto-provisioned, see below.
 - **Ready-to-use tenant** — `provision-tenant.sh` creates a DB tenant (`tenant1`) via the
   private gRPC Tenants API, a matching enabled Keycloak organization, and adds the dev
   users (`tenant1_user`, `tenant1_admin`) as organization members so their tokens carry
@@ -374,6 +396,9 @@ charts. No manual image setup is required.
   `kubectl -n awx get secret awx-admin-password -o jsonpath='{.data.password}' | base64 -d`)
 - Keycloak — `https://keycloak.osac.localhost:8443`
 - OSAC API — `https://fulfillment-api.osac.localhost:8443` (TLS Passthrough, SNI via Envoy)
+- OSAC private CLI API — `https://fulfillment-internal-api.osac.svc.cluster.local:8443`.
+  Add `127.0.0.1 fulfillment-internal-api.osac.svc.cluster.local` to `/etc/hosts`
+  first; the internal name is required for TLS certificate verification.
 
 **Log in** to the UI as `tenant1_user` (or `tenant1_admin`). The password is the
 Keycloak dev-fixtures `default-user-password`:

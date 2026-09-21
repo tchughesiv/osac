@@ -77,7 +77,7 @@ var (
 func init() {
 	flag.Var(
 		&fieldOverrides, "set",
-		"key=value field override for create_compute_instance_from_catalog_item (repeatable).",
+		"key=value field override for create_compute_instance (repeatable).",
 	)
 }
 
@@ -337,10 +337,10 @@ func main() {
 	}
 	log.Printf("Creating ComputeInstance %q from %q ...", name, ref)
 	created, err := callTool[createComputeInstanceOutput](
-		ctx, session, "create_compute_instance_from_catalog_item", createArgs,
+		ctx, session, "create_compute_instance", createArgs,
 	)
 	if err != nil {
-		log.Fatalf("create_compute_instance_from_catalog_item: %v", err)
+		log.Fatalf("create_compute_instance: %v", err)
 	}
 	log.Printf("Created ComputeInstance %s (state=%s)", created.ID, created.State)
 

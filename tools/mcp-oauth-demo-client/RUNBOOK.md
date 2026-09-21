@@ -104,18 +104,22 @@ to retain the VM for inspection; clean it up later with
 
 The MCP server exposes exactly four tools:
 
-- `list_resources`: list the allowlisted `compute_instance_catalog_item` or
-  `compute_instance` resource type. Page size defaults to 50 and cannot exceed
-  100.
-- `get_resource`: fetch one allowlisted resource by ID.
-- `create_compute_instance_from_catalog_item`: create a VM from a published
+- `list_resources`: list one deployment-focused resource type:
+  `compute_instance_catalog_item`, `compute_instance_template`,
+  `instance_type`, `disk_image`, `storage_tier`, `virtual_network`, `subnet`,
+  `security_group`, or `compute_instance`. Page size defaults to 50 and cannot
+  exceed 100.
+- `get_resource`: fetch one of those resources by ID. Inspecting the template
+  reveals the instance type, disk image, and boot-disk storage tier selected by
+  the catalog offering.
+- `create_compute_instance`: create a VM from a published
   ComputeInstance catalog item, applying only catalog-authorized field overrides
   and existing default networking.
 - `delete_compute_instance`: delete one VM by ID.
 
-`list_resources` and `get_resource` are deliberately not generic API
-forwarders. The service validates the caller token and forwards it to the
-fulfillment API, so normal tenant authorization and attribution still apply.
+`list_resources` and `get_resource` are deliberately deployment-focused rather
+than generic API forwarders. The service validates the caller token and forwards
+it to fulfillment, so normal tenant authorization and attribution still apply.
 
 ## 4. Explore with MCP Inspector
 
@@ -139,6 +143,8 @@ When the inspector opens, connect to `osac` and complete browser login with a
 user in the demo tenant. Leave the **OAuth Client Metadata Document** field
 blank: the configuration supplies the pre-registered public
 `osac-mcp-client`. It is not necessary to use dynamic client registration.
+The client grants the `organization` scope for OSAC tenant attribution and the
+`offline_access` scope so Inspector can refresh its browser-login session.
 
 If the ingress certificate is publicly trusted, omit `NODE_EXTRA_CA_CERTS`.
 When using an internal CA, keep it; a successful `curl` does not automatically

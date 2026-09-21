@@ -31,21 +31,25 @@ Next steps:
 
 1. Extract the CA bundle:
    kubectl -n {{ .Values.osacNamespace }} get configmap ca-bundle \
-     -o jsonpath='{.data.ca-bundle\.crt}' > /tmp/osac-ca-bundle.pem
+     -o jsonpath='{.data.bundle\.pem}' > /tmp/osac-ca-bundle.pem
 
 2. Get the admin client secret:
-   OSAC_ADMIN_SECRET=$(kubectl -n {{ .Values.tenant.keycloak.namespace }} get secret keycloak-clients \
+   OSAC_ADMIN_SECRET=$(kubectl -n {{ .Values.tenant.keycloak.namespace }} get secret keycloak-client-secrets \
      -o jsonpath='{.data.osac-admin}' | base64 -d)
 
-3. Login with the osac CLI:
+3. Add the private API hostname to your local hosts file (the `.svc.cluster.local`
+   name is intentional; it matches the TLS certificate):
+   127.0.0.1 fulfillment-internal-api.{{ .Values.osacNamespace }}.svc.cluster.local
+
+4. Login with the osac CLI:
    osac login --ca-file /tmp/osac-ca-bundle.pem \
      --flow credentials \
      --client-id osac-admin \
      --client-secret "${OSAC_ADMIN_SECRET}" \
      --private \
-     https://fulfillment-api.osac.localhost:8443
+     https://fulfillment-internal-api.{{ .Values.osacNamespace }}.svc.cluster.local:8443
 
-4. Verify access:
+5. Verify access:
    osac get clusters
    osac get compute-instances
 

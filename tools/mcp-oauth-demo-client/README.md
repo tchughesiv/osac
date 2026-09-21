@@ -11,9 +11,11 @@ only the MCP wire protocol and does not import fulfillment-service internals.
 
 The server exposes four tools:
 
-- `list_resources` and `get_resource` for the explicit allowlist of
-  ComputeInstance catalog items and ComputeInstances.
-- `create_compute_instance_from_catalog_item` and `delete_compute_instance`
+- `list_resources` and `get_resource` for the deployment-focused allowlist:
+  ComputeInstance catalog items, templates, instance types, disk images,
+  storage tiers, virtual networks, subnets, security groups, and
+  ComputeInstances.
+- `create_compute_instance` and `delete_compute_instance`
   for the VM lifecycle.
 
 This standalone Go module is intentionally outside the root `go.work`. Run it

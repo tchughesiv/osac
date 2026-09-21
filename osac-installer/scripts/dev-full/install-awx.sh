@@ -2,7 +2,7 @@
 # dev-full: install and configure AWX as the AAP provisioning backend on Kind.
 #
 # AWX is the open-source upstream of Red Hat AAP. The osac-operator (configured
-# by values/dev/kind-instance.yaml to talk to awx-service.awx.svc.cluster.local
+# by values/dev/kind-instance.yaml to talk to awx-service.osac.svc.cluster.local
 # and read the 'awx-token' secret) launches AWX job templates that run the real
 # osac-aap playbooks. This script installs AWX and configures the token, inventory,
 # project, job templates and Kubernetes credential it needs.

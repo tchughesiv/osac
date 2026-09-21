@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/proto"
 
 	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
 )
@@ -51,6 +52,42 @@ type mockComputeInstancesClient struct {
 	getFunc    func(context.Context, *publicv1.ComputeInstancesGetRequest, ...grpc.CallOption) (*publicv1.ComputeInstancesGetResponse, error)
 	createFunc func(context.Context, *publicv1.ComputeInstancesCreateRequest, ...grpc.CallOption) (*publicv1.ComputeInstancesCreateResponse, error)
 	deleteFunc func(context.Context, *publicv1.ComputeInstancesDeleteRequest, ...grpc.CallOption) (*publicv1.ComputeInstancesDeleteResponse, error)
+}
+
+type mockComputeInstanceTemplatesClient struct {
+	publicv1.ComputeInstanceTemplatesClient
+	listFunc func(context.Context, *publicv1.ComputeInstanceTemplatesListRequest, ...grpc.CallOption) (*publicv1.ComputeInstanceTemplatesListResponse, error)
+	getFunc  func(context.Context, *publicv1.ComputeInstanceTemplatesGetRequest, ...grpc.CallOption) (*publicv1.ComputeInstanceTemplatesGetResponse, error)
+}
+
+func (m *mockComputeInstanceTemplatesClient) List(
+	ctx context.Context, request *publicv1.ComputeInstanceTemplatesListRequest, options ...grpc.CallOption,
+) (*publicv1.ComputeInstanceTemplatesListResponse, error) {
+	return m.listFunc(ctx, request, options...)
+}
+
+func (m *mockComputeInstanceTemplatesClient) Get(
+	ctx context.Context, request *publicv1.ComputeInstanceTemplatesGetRequest, options ...grpc.CallOption,
+) (*publicv1.ComputeInstanceTemplatesGetResponse, error) {
+	return m.getFunc(ctx, request, options...)
+}
+
+type mockStorageTiersClient struct {
+	publicv1.StorageTiersClient
+	listFunc func(context.Context, *publicv1.StorageTiersListRequest, ...grpc.CallOption) (*publicv1.StorageTiersListResponse, error)
+	getFunc  func(context.Context, *publicv1.StorageTiersGetRequest, ...grpc.CallOption) (*publicv1.StorageTiersGetResponse, error)
+}
+
+func (m *mockStorageTiersClient) List(
+	ctx context.Context, request *publicv1.StorageTiersListRequest, options ...grpc.CallOption,
+) (*publicv1.StorageTiersListResponse, error) {
+	return m.listFunc(ctx, request, options...)
+}
+
+func (m *mockStorageTiersClient) Get(
+	ctx context.Context, request *publicv1.StorageTiersGetRequest, options ...grpc.CallOption,
+) (*publicv1.StorageTiersGetResponse, error) {
+	return m.getFunc(ctx, request, options...)
 }
 
 func (m *mockComputeInstancesClient) List(
@@ -124,7 +161,7 @@ var _ = Describe("handleListResources", func() {
 			},
 		}
 
-		handler := handleListResources(catalogItems, nil)
+		handler := handleListResources(newResourceRegistry(ServerDeps{ComputeInstanceCatalogItemsClient: catalogItems}))
 		_, output, err := handler(context.Background(), requestWithToken("raw-bearer-value"), ListResourcesInput{
 			ResourceType: ResourceTypeComputeInstanceCatalogItem,
 			Offset:       2,
@@ -169,7 +206,7 @@ var _ = Describe("handleListResources", func() {
 			},
 		}
 
-		handler := handleListResources(nil, instances)
+		handler := handleListResources(newResourceRegistry(ServerDeps{ComputeInstancesClient: instances}))
 		_, output, err := handler(context.Background(), requestWithToken("raw-bearer-value"), ListResourcesInput{
 			ResourceType: ResourceTypeComputeInstance,
 			Filter:       "this.metadata.name.startsWith(\"demo\")",
@@ -185,8 +222,83 @@ var _ = Describe("handleListResources", func() {
 		Expect(capturedLimit).To(Equal(int32(50)))
 	})
 
+	It("Lists compute instance templates and storage tiers needed to understand a catalog offering", func() {
+		var capturedTemplateToken, capturedStorageToken string
+		templates := &mockComputeInstanceTemplatesClient{
+			listFunc: func(
+				ctx context.Context, request *publicv1.ComputeInstanceTemplatesListRequest, options ...grpc.CallOption,
+			) (*publicv1.ComputeInstanceTemplatesListResponse, error) {
+				capturedTemplateToken = forwardedToken(ctx)
+				Expect(request.GetFilter()).To(Equal(`this.id == "template-1"`))
+				return publicv1.ComputeInstanceTemplatesListResponse_builder{
+					Size:  1,
+					Total: 1,
+					Items: []*publicv1.ComputeInstanceTemplate{
+						publicv1.ComputeInstanceTemplate_builder{
+							Id:          "template-1",
+							Metadata:    publicv1.Metadata_builder{Name: "small-fedora"}.Build(),
+							Title:       "Small Fedora VM",
+							Description: "A small virtual machine",
+						}.Build(),
+					},
+				}.Build(), nil
+			},
+		}
+		storageTiers := &mockStorageTiersClient{
+			listFunc: func(
+				ctx context.Context, request *publicv1.StorageTiersListRequest, options ...grpc.CallOption,
+			) (*publicv1.StorageTiersListResponse, error) {
+				capturedStorageToken = forwardedToken(ctx)
+				Expect(request.GetLimit()).To(Equal(int32(50)))
+				return publicv1.StorageTiersListResponse_builder{
+					Size:  1,
+					Total: 1,
+					Items: []*publicv1.StorageTier{
+						publicv1.StorageTier_builder{
+							Id:       "storage-tier-1",
+							Metadata: publicv1.Metadata_builder{Name: "local"}.Build(),
+							Spec:     publicv1.StorageTierSpec_builder{Description: "Local block storage"}.Build(),
+							Status: publicv1.StorageTierStatus_builder{
+								State: publicv1.StorageTierState_STORAGE_TIER_STATE_ACTIVE,
+							}.Build(),
+						}.Build(),
+					},
+				}.Build(), nil
+			},
+		}
+
+		handler := handleListResources(newResourceRegistry(ServerDeps{
+			ComputeInstanceTemplatesClient: templates,
+			StorageTiersClient:             storageTiers,
+		}))
+		_, templatesOutput, err := handler(context.Background(), requestWithToken("raw-bearer-value"), ListResourcesInput{
+			ResourceType: ResourceTypeComputeInstanceTemplate,
+			Filter:       `this.id == "template-1"`,
+		})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(templatesOutput.Items).To(ConsistOf(ResourceSummary{
+			ID:          "template-1",
+			Name:        "small-fedora",
+			Title:       "Small Fedora VM",
+			Description: "A small virtual machine",
+		}))
+
+		_, storageOutput, err := handler(context.Background(), requestWithToken("raw-bearer-value"), ListResourcesInput{
+			ResourceType: ResourceTypeStorageTier,
+		})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(storageOutput.Items).To(ConsistOf(ResourceSummary{
+			ID:          "storage-tier-1",
+			Name:        "local",
+			Description: "Local block storage",
+			State:       "STORAGE_TIER_STATE_ACTIVE",
+		}))
+		Expect(capturedTemplateToken).To(Equal("Bearer raw-bearer-value"))
+		Expect(capturedStorageToken).To(Equal("Bearer raw-bearer-value"))
+	})
+
 	It("Rejects an unsupported resource type without calling a downstream client", func() {
-		handler := handleListResources(nil, nil)
+		handler := handleListResources(resourceRegistry{})
 		_, _, err := handler(context.Background(), requestWithToken("raw-bearer-value"), ListResourcesInput{
 			ResourceType: "cluster",
 		})
@@ -194,7 +306,7 @@ var _ = Describe("handleListResources", func() {
 	})
 
 	It("Rejects an invalid page before calling a downstream client", func() {
-		handler := handleListResources(nil, nil)
+		handler := handleListResources(resourceRegistry{})
 		_, _, err := handler(context.Background(), requestWithToken("raw-bearer-value"), ListResourcesInput{
 			ResourceType: ResourceTypeComputeInstance,
 			PageSize:     101,
@@ -211,7 +323,7 @@ var _ = Describe("handleListResources", func() {
 			},
 		}
 
-		handler := handleListResources(catalogItems, nil)
+		handler := handleListResources(newResourceRegistry(ServerDeps{ComputeInstanceCatalogItemsClient: catalogItems}))
 		_, _, err := handler(context.Background(), requestWithToken("raw-bearer-value"), ListResourcesInput{
 			ResourceType: ResourceTypeComputeInstanceCatalogItem,
 		})
@@ -237,7 +349,7 @@ var _ = Describe("handleGetResource", func() {
 			},
 		}
 
-		handler := handleGetResource(catalogItems, nil)
+		handler := handleGetResource(newResourceRegistry(ServerDeps{ComputeInstanceCatalogItemsClient: catalogItems}))
 		_, output, err := handler(context.Background(), requestWithToken("raw-bearer-value"), GetResourceInput{
 			ResourceType: ResourceTypeComputeInstanceCatalogItem,
 			ID:           "catalog-item-1",
@@ -265,7 +377,7 @@ var _ = Describe("handleGetResource", func() {
 			},
 		}
 
-		handler := handleGetResource(nil, instances)
+		handler := handleGetResource(newResourceRegistry(ServerDeps{ComputeInstancesClient: instances}))
 		_, output, err := handler(context.Background(), requestWithToken("raw-bearer-value"), GetResourceInput{
 			ResourceType: ResourceTypeComputeInstance,
 			ID:           "instance-1",
@@ -278,8 +390,48 @@ var _ = Describe("handleGetResource", func() {
 		Expect(capturedToken).To(Equal("Bearer raw-bearer-value"))
 	})
 
+	It("Gets a compute instance template including the boot disk storage tier", func() {
+		var capturedToken string
+		templates := &mockComputeInstanceTemplatesClient{
+			getFunc: func(
+				ctx context.Context, request *publicv1.ComputeInstanceTemplatesGetRequest, options ...grpc.CallOption,
+			) (*publicv1.ComputeInstanceTemplatesGetResponse, error) {
+				capturedToken = forwardedToken(ctx)
+				Expect(request.GetId()).To(Equal("template-1"))
+				return publicv1.ComputeInstanceTemplatesGetResponse_builder{
+					Object: publicv1.ComputeInstanceTemplate_builder{
+						Id: "template-1",
+						SpecDefaults: publicv1.ComputeInstanceTemplateSpecDefaults_builder{
+							BootDisk: publicv1.ComputeInstanceDisk_builder{
+								SizeGib: proto.Int32(20),
+								StorageTier: publicv1.StorageTierReference_builder{
+									Name: "local",
+								}.Build(),
+							}.Build(),
+						}.Build(),
+					}.Build(),
+				}.Build(), nil
+			},
+		}
+
+		handler := handleGetResource(newResourceRegistry(ServerDeps{ComputeInstanceTemplatesClient: templates}))
+		_, output, err := handler(context.Background(), requestWithToken("raw-bearer-value"), GetResourceInput{
+			ResourceType: ResourceTypeComputeInstanceTemplate,
+			ID:           "template-1",
+		})
+		Expect(err).ToNot(HaveOccurred())
+		specDefaults, ok := output.Resource["specDefaults"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		bootDisk, ok := specDefaults["bootDisk"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		storageTier, ok := bootDisk["storageTier"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		Expect(storageTier).To(HaveKeyWithValue("name", "local"))
+		Expect(capturedToken).To(Equal("Bearer raw-bearer-value"))
+	})
+
 	It("Rejects an unsupported resource type", func() {
-		handler := handleGetResource(nil, nil)
+		handler := handleGetResource(resourceRegistry{})
 		_, _, err := handler(context.Background(), requestWithToken("raw-bearer-value"), GetResourceInput{
 			ResourceType: "cluster",
 			ID:           "cluster-1",
@@ -296,7 +448,7 @@ var _ = Describe("handleGetResource", func() {
 			},
 		}
 
-		handler := handleGetResource(nil, instances)
+		handler := handleGetResource(newResourceRegistry(ServerDeps{ComputeInstancesClient: instances}))
 		_, _, err := handler(context.Background(), requestWithToken("raw-bearer-value"), GetResourceInput{
 			ResourceType: ResourceTypeComputeInstance,
 			ID:           "instance-1",

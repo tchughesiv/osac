@@ -549,7 +549,7 @@ data:
 
     ensure_mcp_client() {
       local client_id="osac-mcp-client"
-      local token client_uuid client_payload
+      local token client_uuid client_payload scope_name scope_uuid
 
       echo "Ensuring Keycloak client ${client_id} is registered..."
       token="$(admin_token)"
@@ -575,7 +575,31 @@ data:
           -H 'Content-Type: application/json' \
           -d "${client_payload}"
         echo "Created Keycloak client ${client_id}"
+
+        client_uuid="$(curl -k -sf -X GET \
+          "https://keycloak:443/admin/realms/osac/clients?clientId=${client_id}" \
+          -H "Authorization: Bearer ${token}" | \
+          python3 -c "import sys,json; clients=json.load(sys.stdin); print(next((client['id'] for client in clients if client['clientId'] == sys.argv[1]), ''))" \
+          "${client_id}")"
       fi
+
+      [[ -n "${client_uuid}" ]] || { echo "ERROR: Could not resolve Keycloak client ${client_id}"; return 1; }
+
+      # Updating a ClientRepresentation does not update Keycloak's client-scope
+      # mappings. Reconcile optional scopes through their dedicated endpoint so an
+      # existing public MCP client can request a refresh token after an upgrade.
+      while IFS= read -r scope_name; do
+        scope_uuid="$(curl -k -sf -X GET https://keycloak:443/admin/realms/osac/client-scopes \
+          -H "Authorization: Bearer ${token}" | \
+          python3 -c "import sys,json; scopes=json.load(sys.stdin); print(next((scope['id'] for scope in scopes if scope['name'] == sys.argv[1]), ''))" \
+          "${scope_name}")"
+        [[ -n "${scope_uuid}" ]] || { echo "ERROR: Could not resolve Keycloak scope ${scope_name}"; return 1; }
+
+        curl -k -sf -X PUT \
+          "https://keycloak:443/admin/realms/osac/clients/${client_uuid}/optional-client-scopes/${scope_uuid}" \
+          -H "Authorization: Bearer ${token}"
+        echo "Assigned optional Keycloak scope ${scope_name} to ${client_id}"
+      done < <(python3 -c "import json,sys; realm=json.load(open(sys.argv[1])); client=next((client for client in realm['clients'] if client['clientId'] == sys.argv[2]), None); client is not None or sys.exit('missing MCP client in bootstrap realm'); print('\\n'.join(client.get('optionalClientScopes', [])))" /realm/realm.json "${client_id}")
     }
 
     set_password() {

@@ -24,7 +24,7 @@ import (
 	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
 )
 
-var _ = Describe("handleCreateComputeInstanceFromCatalogItem", func() {
+var _ = Describe("handleCreateComputeInstance", func() {
 	It("Builds a compute instance from the catalog item and forwards the caller token", func() {
 		var capturedToken string
 		var capturedObject *publicv1.ComputeInstance
@@ -45,13 +45,13 @@ var _ = Describe("handleCreateComputeInstanceFromCatalogItem", func() {
 			},
 		}
 
-		handler := handleCreateComputeInstanceFromCatalogItem(instances)
-		_, output, err := handler(context.Background(), requestWithToken("raw-bearer-value"), CreateComputeInstanceFromCatalogItemInput{
+		handler := handleCreateComputeInstance(instances)
+		_, output, err := handler(context.Background(), requestWithToken("raw-bearer-value"), CreateComputeInstanceInput{
 			Name:        "demo-vm",
 			CatalogItem: "catalog-item-1",
 		})
 		Expect(err).ToNot(HaveOccurred())
-		Expect(output).To(Equal(CreateComputeInstanceFromCatalogItemOutput{
+		Expect(output).To(Equal(CreateComputeInstanceOutput{
 			ID:    "instance-1",
 			State: "COMPUTE_INSTANCE_STATE_STARTING",
 		}))
@@ -74,8 +74,8 @@ var _ = Describe("handleCreateComputeInstanceFromCatalogItem", func() {
 			},
 		}
 
-		handler := handleCreateComputeInstanceFromCatalogItem(instances)
-		_, _, err := handler(context.Background(), requestWithToken("raw-bearer-value"), CreateComputeInstanceFromCatalogItemInput{
+		handler := handleCreateComputeInstance(instances)
+		_, _, err := handler(context.Background(), requestWithToken("raw-bearer-value"), CreateComputeInstanceInput{
 			Name:        "demo-vm",
 			CatalogItem: "catalog-item-1",
 			Set:         []string{"ssh_public_key=ssh-ed25519 AAAA"},
@@ -93,8 +93,8 @@ var _ = Describe("handleCreateComputeInstanceFromCatalogItem", func() {
 			},
 		}
 
-		handler := handleCreateComputeInstanceFromCatalogItem(instances)
-		_, _, err := handler(context.Background(), requestWithToken("raw-bearer-value"), CreateComputeInstanceFromCatalogItemInput{
+		handler := handleCreateComputeInstance(instances)
+		_, _, err := handler(context.Background(), requestWithToken("raw-bearer-value"), CreateComputeInstanceInput{
 			Name:        "demo-vm",
 			CatalogItem: "catalog-item-1",
 			Set:         []string{"missing-equals-sign"},
@@ -111,8 +111,8 @@ var _ = Describe("handleCreateComputeInstanceFromCatalogItem", func() {
 			},
 		}
 
-		handler := handleCreateComputeInstanceFromCatalogItem(instances)
-		_, _, err := handler(context.Background(), requestWithToken("raw-bearer-value"), CreateComputeInstanceFromCatalogItemInput{
+		handler := handleCreateComputeInstance(instances)
+		_, _, err := handler(context.Background(), requestWithToken("raw-bearer-value"), CreateComputeInstanceInput{
 			Name:        "demo-vm",
 			CatalogItem: "catalog-item-1",
 		})

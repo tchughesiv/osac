@@ -17,6 +17,14 @@ KIND_VALUES="${INSTALLER_DIR}/values/dev/kind-instance.yaml"
 KIND_DEV_FULL_VALUES="${INSTALLER_DIR}/values/dev/kind-instance-devfull.yaml"
 VIRT_NODE_SETUP="${SCRIPT_DIR}/dev-full/install-virt-node-setup.sh"
 KIND_RUNTIME="${SCRIPT_DIR}/dev-full/kind-runtime.sh"
+DEVSTACK_SEEDER="${DEVSTACK_CHART}/files/seed-catalog-simple.sh"
+DEVSTACK_SEED_HOOK="${DEVSTACK_CHART}/templates/hooks/seed-catalog.yaml"
+DEVSTACK_NOTES="${DEVSTACK_CHART}/templates/NOTES.txt"
+COMPUTE_INSTANCE_PLAYBOOK="${INSTALLER_DIR}/../osac-aap/playbook_osac_create_compute_instance.yml"
+MCP_REALM_FILES=(
+    "${INSTALLER_DIR}/prerequisites/keycloak/service/files/realm.json"
+    "${INSTALLER_DIR}/charts/osac-infra/files/realm.json"
+)
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -30,6 +38,70 @@ bash -n "${IMAGE_VALIDATOR}"
 bash -n "${EXTERNAL_VALIDATOR}"
 bash -n "${VIRT_NODE_SETUP}"
 bash -n "${KIND_RUNTIME}"
+bash -n "${DEVSTACK_SEEDER}"
+
+for realm_file in "${MCP_REALM_FILES[@]}"; do
+    jq -e '
+        any(
+            .clients[];
+            .clientId == "osac-mcp-client"
+            and (.defaultClientScopes | index("organization") != null)
+            and (.optionalClientScopes | index("offline_access") != null)
+        )
+    ' "${realm_file}" >/dev/null || \
+        fail "MCP OAuth client must grant organization and offline_access scopes: ${realm_file}"
+done
+for expected in \
+    'osac.private.v1.InstanceTypes/Create' \
+    'osac.private.v1.StorageBackends/Create' \
+    'osac.private.v1.StorageTiers/Create' \
+    'osac.private.v1.ComputeInstanceTemplates/Create' \
+    'osac.private.v1.ComputeInstanceTemplates/Update' \
+    'osac.private.v1.ComputeInstanceCatalogItems/Create' \
+    'failed to create %s with %s' \
+    'ARCHITECTURE_ARM64' \
+    'grpcurl -cacert "${CA_FILE}"' \
+    'kubectl -n "${NS}" create token "${ADMIN_SERVICE_ACCOUNT}"' \
+    '-H "authorization: Bearer ${admin_token}"' \
+    '"provider":"kind-local-path"' \
+    'STORAGE_PROTOCOL_BLOCK' \
+    '"storageTier":{"name":"local"}' \
+    '"paths":["spec_defaults"]' \
+    '/etc/fulfillment-api-tls/ca.crt'; do
+    rg -F -- "${expected}" "${DEVSTACK_SEEDER}" >/dev/null || \
+        fail "dev-full catalog seeder is missing: ${expected}"
+done
+if rg -F '>/dev/null 2>&1 || log' "${DEVSTACK_SEEDER}" >/dev/null; then
+    fail "dev-full catalog seeder must not hide failed gRPC requests"
+fi
+if rg -F 'grpcurl -plaintext' "${DEVSTACK_SEEDER}" >/dev/null; then
+    fail "dev-full catalog seeder must use verified TLS for the internal API"
+fi
+rg -F 'url: "http://awx-service.osac.svc.cluster.local:80/api"' "${KIND_VALUES}" >/dev/null || \
+    fail "dev-full operator must address the AWX Service in the osac namespace"
+rg -F 'tenant_storage_class_storage_classes | length == 0' "${COMPUTE_INSTANCE_PLAYBOOK}" >/dev/null || \
+    fail "compute instance workflow must skip JIT storage when a StorageClass is already resolved"
+for expected in \
+    '.Values.catalog.internalApiService' \
+    '.Values.catalog.internalApiPort' \
+    'secretName: fulfillment-api-tls' \
+    'mountPath: /etc/fulfillment-api-tls'; do
+    rg -F -- "${expected}" "${DEVSTACK_SEED_HOOK}" >/dev/null || \
+        fail "dev-full catalog seed hook is missing internal API argument: ${expected}"
+done
+rg -F 'get secret keycloak-client-secrets' "${DEVSTACK_NOTES}" >/dev/null || \
+    fail "dev-full notes use an obsolete Keycloak client-secret name"
+rg -F "jsonpath='{.data.bundle\\.pem}'" "${DEVSTACK_NOTES}" >/dev/null || \
+    fail "dev-full notes use an obsolete CA bundle ConfigMap key"
+rg -F 'https://fulfillment-internal-api.{{ .Values.osacNamespace }}.svc.cluster.local:8443' "${DEVSTACK_NOTES}" >/dev/null || \
+    fail "dev-full notes point private CLI access at the public API"
+for expected in \
+    'optional-client-scopes/${scope_uuid}' \
+    'Assigned optional Keycloak scope ${scope_name} to ${client_id}'; do
+    rg -F -- "${expected}" \
+        "${INSTALLER_DIR}/charts/osac-infra/templates/keycloak/resources.yaml" >/dev/null || \
+        fail "Keycloak MCP client reconciliation is missing: ${expected}"
+done
 
 "${IMAGE_VALIDATOR}" quay.io/example/fulfillment-service:mcp-demo linux/amd64
 "${IMAGE_VALIDATOR}" registry.example.test:5000/example/fulfillment-service:v1.2.3 linux/arm64
@@ -369,6 +441,16 @@ if ! HELM_REPOSITORY_CONFIG="${devstack_repositories}" \
     helm lint "${DEVSTACK_CHART}" >/dev/null; then
     fail "failed to lint the devstack chart with its dependencies"
 fi
+if ! devstack_rendered="$(helm template osac-devstack "${DEVSTACK_CHART}" --namespace osac)"; then
+    fail "failed to render the devstack chart"
+fi
+for expected in \
+    'name: osac-devstack-patch-awx-operator-r1' \
+    'ttlSecondsAfterFinished: 3600' \
+    'value":"ghcr.io/kube-rbac-proxy/kube-rbac-proxy:v0.22.1'; do
+    rg -F -- "${expected}" <<<"${devstack_rendered}" >/dev/null || \
+        fail "devstack render is missing the repeatable AWX sidecar patch: ${expected}"
+done
 
 if ! rendered="$(helm template osac "${OSAC_CHART}" --namespace mcp-demo --values "${VM_VALUES}" \
 	--set-string service.externalHostname=fulfillment-api-mcp-demo.apps.example.test \
@@ -464,11 +546,15 @@ for expected in \
     'install-mcp-demo-kind' \
     'requires NS=osac because dev-full is a single local instance' \
     'MCP_DEMO_KIND_IMAGE ?= localhost/fulfillment-service:mcp-demo' \
+    'export KUBECONFIG := $(KIND_KUBECONFIG)' \
     'MCP_DEMO_KIND_INFRA_HELM_ARGS ?=' \
     'MCP_DEMO_KIND_HELM_ARGS ?=' \
     'DEVSTACK_CHART := $(CHARTS)/osac-devstack' \
     'DEVSTACK_AWX_REPO := awx-operator' \
     'DEVSTACK_AWX_REPO_URL := https://ansible-community.github.io/awx-operator-helm/' \
+    'DEVSTACK_CLI_TOOLS_IMAGE ?= localhost/osac-devstack-cli-tools:dev' \
+    'build-devstack-cli-tools-image' \
+    '--set-string cliImage=$(DEVSTACK_CLI_TOOLS_IMAGE)' \
     '$(call build-fulfillment-service-image,$(MCP_DEMO_KIND_IMAGE))' \
     '$(call kind-load-image,$(MCP_DEMO_KIND_IMAGE))' \
     'DEPS_HELM_ARGS="" INFRA_HELM_ARGS="$(MCP_DEMO_KIND_INFRA_HELM_ARGS)"' \
