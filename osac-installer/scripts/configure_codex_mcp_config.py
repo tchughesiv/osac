@@ -75,8 +75,8 @@ def merge_config(original: str, url: str) -> str:
 
     server_values = {
         "url": url,
-        "startup_timeout_sec": 20,
-        "tool_timeout_sec": 120,
+#        "startup_timeout_sec": 20,
+#        "tool_timeout_sec": 120,
         "default_tools_approval_mode": "writes",
     }
     oauth_values = {
