@@ -40,7 +40,7 @@
   <text x="940" y="180" class="label">public gRPC</text>
   <text x="940" y="202" class="label">same caller token</text>
 
-  <text x="700" y="360" class="label">model polls current state through MCP with get_resource — accepted does not mean ready</text>
+  <text x="700" y="360" class="label">Create accepted ≠ VM ready; poll status with get_resource</text>
 
   <rect x="195" y="395" width="1010" height="58" fill="#f2f2f2" stroke="#e0e0e0" rx="8"/>
   <text x="700" y="432" class="footer">Existing Fulfillment → CR → operator/AAP/KubeVirt workflow remains unchanged</text>
