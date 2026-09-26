@@ -84,12 +84,12 @@ The MCP validates the incoming bearer token and forwards it on tool calls. Fulfi
 
 ## Four tools, one governed workflow
 
-| Tool | Purpose | Contract |
+| Tool | Purpose | Key behavior |
 | --- | --- | --- |
-| `list_resources` | Discover catalog, sizing, storage, networks, and VMs | Read-only, allowlisted, bounded |
-| `get_resource` | Inspect references, policy, and current state | Read-only and idempotent |
-| `create_compute_instance` | Submit a catalog-mediated VM request | Typed options; asynchronous |
-| `delete_compute_instance` | Explicitly clean up one VM | Destructive; explicit ID; asynchronous |
+| `list_resources` | Discover catalog, sizing, storage, networks, and VMs | Read-only; allowlisted; paginated |
+| `get_resource` | Inspect references, policy, and current state | Read-only; resource type + ID |
+| `create_compute_instance` | Submit a catalog-mediated VM request | Catalog item required; typed inputs; asynchronous |
+| `delete_compute_instance` | Explicitly clean up one VM | ID-scoped; destructive; asynchronous |
 
 **Why this shape?** Compact generic discovery keeps model context small;
 purpose-specific mutations preserve precise schemas and accurate risk hints.
@@ -146,7 +146,9 @@ Backup — if asked:
 
 Capability scope: ComputeInstance alone does not prove the tool shape generalizes. OSAC also has catalog items for clusters and bare metal, but their provisioning paths differ. Prioritize each by user demand and platform readiness. For each journey, verify that the public Fulfillment API supports discovery, selectable inputs, create, status, and cleanup; then expose a small set of typed MCP actions. Keep generic discovery where useful, but do not mirror every Fulfillment RPC as a tool.
 
-Network creation is another capability workflow, not just another catalog offering. The public Fulfillment API already supports creating VirtualNetworks, Subnets, and SecurityGroups. Fulfillment also validates CIDR format and network-class compatibility, and requires subnet CIDRs to fit within the parent network without overlapping sibling subnets. MCP should not redefine those rules. A network-creation flow must establish how requested CIDRs are supplied, then coordinate dependent creates, readiness, ownership, partial-failure recovery, and dependency-ordered cleanup. It should not be hidden inside VM creation.
+Network creation needs its own workflow, not a hidden side effect of VM creation. A VM selects existing, ready networking; creating a network makes separate tenant-visible choices about address space and optional firewall rules, and spans several asynchronous writes. The public Fulfillment API already supports those resources and validates CIDR format, network-class compatibility, subnet containment and overlap, and attachment readiness. MCP should use those rules rather than duplicate them, and show the user each proposed create and its outcome. Today's MCP can inspect existing networking but cannot discover NetworkClasses or create network resources.
+
+The create order is: discover a platform-provided NetworkClass; create a VirtualNetwork with a CIDR and wait for READY; create a Subnet inside that CIDR and, if needed, a SecurityGroup on the same VirtualNetwork. Subnet and SecurityGroup are siblings, so neither has to be created before the other, but the selected Subnet and any selected SecurityGroup must be READY before a VM can use them. Then create the VM with those references. A future MCP flow must handle partial failure and distinguish newly created resources from shared ones. For cleanup, delete this VM first, then any owned SecurityGroup, Subnet, and VirtualNetwork in that order, checking for other references before each deletion; backend guards prevent deleting a Subnet while a SecurityGroup remains on its network or deleting a VirtualNetwork while children remain. Never remove shared networking merely because one VM was deleted.
 
 Mutation governance: Tool descriptions and risk annotations are hints to model hosts, not approval or authorization boundaries. The server does not enforce a separate human approval step. Define which mutations require confirmation and where it is enforced. A preview or dry-run should reuse Fulfillment validation to show resolved defaults, rejected inputs, and likely effects without persisting a resource. Test tenant isolation, and correlate MCP and Fulfillment audit records by caller, tenant, tool, catalog item, resource, and outcome without logging tokens or secrets.
 
