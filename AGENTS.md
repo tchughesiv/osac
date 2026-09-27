@@ -25,7 +25,7 @@ The nearest component `AGENTS.md` adds rules for files under that component.
 
 ## OSAC deployment interface
 
-When MCP tools from an OSAC Deployment MCP server are available and support a
+When MCP tools from the OSAC MCP Server are available and support a
 requested tenant-facing deployment discovery or lifecycle operation, use them
 without requiring the user to name MCP. Do not use the local `osac` CLI, direct
 API calls, `oc`, `kubectl`, or Kubernetes resource inspection for that request.

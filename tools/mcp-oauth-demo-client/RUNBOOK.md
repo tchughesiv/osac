@@ -1,7 +1,7 @@
-# OSAC Deployment MCP PoC runbook
+# OSAC MCP Server PoC runbook
 
 This runbook demonstrates browser OAuth and a tenant-facing ComputeInstance
-lifecycle through the OSAC Deployment MCP server. The supported demo target is
+lifecycle through the OSAC MCP Server. The supported demo target is
 the local Kind `dev-full` environment; it does not create a CaaS cluster.
 
 The resulting VM is infrastructure only. This phase does not deploy an
@@ -66,10 +66,13 @@ callback used below; it has no client secret. Do not place the password in this
 runbook or shell history.
 
 ```bash
-GOWORK=off go run ./tools/mcp-oauth-demo-client \
-  -server-url "$MCP_URL" \
-  -issuer "$KEYCLOAK_ISSUER" \
-  -delete
+(
+  cd tools/mcp-oauth-demo-client
+  GOWORK=off go run . \
+    -server-url "$MCP_URL" \
+    -issuer "$KEYCLOAK_ISSUER" \
+    -delete
+)
 ```
 
 The browser login returns to `http://localhost:8091/callback`. The client lists

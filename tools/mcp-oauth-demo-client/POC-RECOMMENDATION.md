@@ -1,4 +1,4 @@
-# OSAC Deployment MCP PoC recommendation
+# OSAC MCP Server PoC recommendation
 
 ## Bottom line
 

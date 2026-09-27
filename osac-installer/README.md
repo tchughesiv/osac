@@ -152,7 +152,7 @@ make install-osac  PLATFORM=openshift PROFILE=<profile> NS=<namespace>   # OSAC 
 | `NS` | Target namespace (required) |
 | `EXTRA_HELM_ARGS` | Extra `--set`/`--set-string` args for the `osac` application release |
 
-#### Deployment MCP PoC on Kind (`PLATFORM=kind`, `PROFILE=dev-full`)
+#### OSAC MCP Server PoC on Kind (`PLATFORM=kind`, `PROFILE=dev-full`)
 
 For local development, use the dedicated Kind target. It builds the
 fulfillment-service image from the current checkout, loads it into the Kind

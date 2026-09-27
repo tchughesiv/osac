@@ -1,6 +1,6 @@
 # mcp-oauth-demo-client
 
-Reference OAuth client for the OSAC Deployment MCP proof of concept
+Reference OAuth client for the OSAC MCP Server proof of concept
 ([OSAC-4388](https://issues.redhat.com/browse/OSAC-4388)). It proves the RFC
 9728 discovery plus OAuth 2.0 Authorization Code with PKCE flow against
 `fulfillment-service start mcp-server` without configuring a full AI IDE.
@@ -19,11 +19,14 @@ The server exposes four tools:
   lifecycle. Creation accepts catalog-authorized instance-type, boot-disk, and
   network-attachment overrides using IDs returned by the read tools.
 
-This standalone Go module is intentionally outside the root `go.work`. Run it
-from the repository root with `GOWORK=off`:
+This standalone Go module is intentionally outside the root `go.work`. From
+the repository root, run it in a subshell with `GOWORK=off`:
 
 ```bash
-GOWORK=off go run ./tools/mcp-oauth-demo-client -server-url "$MCP_URL"
+(
+  cd tools/mcp-oauth-demo-client
+  GOWORK=off go run . -server-url "$MCP_URL"
+)
 ```
 
 Pass `-issuer "$KEYCLOAK_ISSUER"` to pin the authorization server and

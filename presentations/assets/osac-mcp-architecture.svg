@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="560" viewBox="0 0 1400 560" role="img" aria-labelledby="title desc">
-  <title id="title">OSAC Deployment MCP request flow</title>
-  <desc id="desc">A model host sends the user's OAuth token through the OSAC Deployment MCP to the Fulfillment public API. Fulfillment remains authoritative and the existing downstream OSAC reconciliation and provider workflow is unchanged.</desc>
+  <title id="title">OSAC MCP Server request flow</title>
+  <desc id="desc">A model host sends the user's OAuth token through the OSAC MCP Server to the Fulfillment public API. Fulfillment remains authoritative and the existing downstream OSAC reconciliation and provider workflow is unchanged.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L0,6 L9,3 z" fill="#151515"/>
@@ -22,10 +22,9 @@
   <text x="220" y="265" class="detail">human-led session</text>
 
   <rect x="560" y="125" width="280" height="180" class="mcp"/>
-  <text x="700" y="180" class="title">OSAC Deployment</text>
-  <text x="700" y="215" class="title">MCP</text>
-  <text x="700" y="253" class="detail">Go adapter · dedicated pod</text>
-  <text x="700" y="283" class="detail">same Fulfillment image</text>
+  <text x="700" y="180" class="title">OSAC MCP Server</text>
+  <text x="700" y="225" class="detail">Go adapter · dedicated pod</text>
+  <text x="700" y="265" class="detail">same Fulfillment image</text>
 
   <rect x="1040" y="125" width="280" height="180" class="box"/>
   <text x="1180" y="180" class="title">Fulfillment API</text>

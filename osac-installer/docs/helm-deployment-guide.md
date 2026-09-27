@@ -165,7 +165,7 @@ All targets require `PLATFORM=kind|openshift PROFILE=dev|vmaas-ci|... NS=<namesp
 | `make test` | Run integration tests (SUITE= required) |
 | `make helm-lint` | Lint all charts |
 
-### Local Deployment MCP PoC on Kind
+### Local OSAC MCP Server PoC on Kind
 
 For a self-contained local ComputeInstance demo, use Kind `dev-full` rather
 than an OpenShift profile:

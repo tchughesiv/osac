@@ -2,7 +2,7 @@
 marp: true
 theme: redhat
 paginate: true
-title: MCP PoC — Compute Instance Provisioning
+title: OSAC MCP Server PoC — ComputeInstance Provisioning
 description: An authenticated, catalog-governed MCP interface for provisioning OSAC ComputeInstances from model hosts.
 ---
 
@@ -20,15 +20,15 @@ section footer a { text-shadow: none; box-shadow: none; }
 <!-- _class: title -->
 <!-- _paginate: false -->
 
-# OSAC Deployment MCP PoC
+# OSAC MCP Server PoC
 
 ### Natural-language ComputeInstance provisioning
 
 OSAC-4388
 
 <!--
-Speaker notes — 0:00–0:15
-Spoken: The question was not whether a model can call an API. It was whether a model can provision through OSAC without bypassing the catalog, tenant identity, or existing reconciliation path.
+Speaker notes — 0:00–0:20
+Spoken: The goal of this PoC was to prove that a tenant user could ask for a VM in natural language and have MCP submit it through our existing Fulfillment API using their token. MCP stands for Model Context Protocol, a standard way for model hosts to discover and call tools.
 -->
 
 ---
@@ -51,14 +51,16 @@ The PoC tested whether it could:
 <!-- _footer: "Scope: [OSAC-4388](https://redhat.atlassian.net/browse/OSAC-4388)" -->
 
 <!--
-Speaker notes — 0:15–0:55
-Spoken: We started with cluster provisioning, then chose a focused VMaaS journey that still exercises catalog, identity, networking, storage, and reconciliation. MCP gives a model host named, typed actions over OAuth without requiring a local OSAC CLI or shell. Fulfillment still applies the caller's tenant permissions and catalog policy; MCP adds no new provisioning authority.
+Speaker notes — 0:20–0:55
+Spoken: The model has to find a published VM offering and look at the available size, storage, and network options. MCP gives it a small set of actions without needing the OSAC CLI on the model host. The only agent guidance we added is a short rule to prefer the connected OSAC MCP tools; the tools and live OSAC data supply the details. Fulfillment still checks what the signed-in user is allowed to do.
 
 Backup — if asked:
 
 The OSAC CLI can reach the same backend and remains useful for people and scripts. MCP's advantage for a remote or restricted model host is discoverable schemas and structured results with less CLI-specific guidance. This is the provisioning lane, distinct from the proposed Observability MCP.
 
-Catalog field policies define locked and editable values plus defaults. Users supply permitted configuration; they do not override catalog policy. Fulfillment checks the caller's allowed operations and tenant, verifies the catalog item is visible and published, applies defaults and locked values, and validates selected references. The model's request for human confirmation is part of the demo workflow, not a server-enforced approval gate.
+Agent guidance: This repo has one short deployment-specific `AGENTS.md` rule: prefer the connected OSAC MCP tools for supported tenant requests, inspect catalog choices before creating, and do not silently switch to CLI. The MCP server also advertises brief instructions and each tool's description, typed inputs, and behavior hints. The read tools return today's actual offerings and selectable references. We did not put a per-command OSAC CLI playbook into the host's instructions. This is less guidance, not zero guidance, and different model hosts may use it differently.
+
+Catalog field policies define locked and editable values plus defaults. Users supply permitted configuration; they do not override catalog policy. Fulfillment checks the caller's allowed operations and tenant, verifies the catalog item is visible and published, applies defaults and locked values, and validates selected references.
 -->
 
 ---
@@ -69,7 +71,7 @@ Catalog field policies define locked and editable values plus defaults. Users su
 
 <!--
 Speaker notes — 0:55–1:45
-Spoken: This is a Go protocol adapter, not another control plane. It runs in a separate pod from the same Fulfillment image and translates MCP tool calls into generated public Fulfillment API calls, forwarding the caller's token. Fulfillment remains authoritative for identity, tenant access, catalog policy, and lifecycle state. The existing reconciliation and provider path is unchanged. This MCP path does not grant an admin identity or direct Kubernetes or AAP access.
+Spoken: This is a small Go adapter, not a new control plane. It runs in its own pod using the Fulfillment image. It turns tool calls into requests to the public Fulfillment API and forwards the user's token. From there, OSAC follows the same controller and provider path it already uses. There's no admin shortcut or direct Kubernetes access. A successful create call just means OSAC accepted the request; the model still has to check the VM's actual status.
 
 Backup — if asked:
 
@@ -96,9 +98,13 @@ purpose-specific mutations preserve precise schemas and accurate risk hints.
 
 <!--
 Speaker notes — 1:45–2:25
-Spoken: Two generic read tools cover nine allowlisted deployment resource types, including catalog items, instance types, storage tiers, subnets, and security groups. Create and delete remain named, typed actions. The model can select existing networking, but these tools cannot create a network or invoke arbitrary Fulfillment methods.
+Spoken: We kept the tool list short. The two read tools can look up nine specific resource types, including catalog items, VM sizes, images, storage tiers, networks, and existing VMs. Create and delete are separate actions with their own inputs. This isn't a general-purpose proxy into Fulfillment, and network creation isn't part of this demo.
 
-Backup — if asked: Deletion is asynchronous. Repeating it after the resource is gone can return `NotFound`, even though it cannot delete that resource twice.
+Backup — if asked:
+
+MCP tool annotations: `list_resources` and `get_resource` are marked read-only and idempotent; create is non-idempotent; delete is destructive and idempotent. All four declare `openWorldHint=false`. Why is that useful? When a model host discovers the tools, it gets these behavior hints alongside their schemas. It can use them to tell lookups from changes, flag that delete is destructive, and avoid treating create as safe to retry. Otherwise it has to infer those properties from names and descriptions. Hosts may use the hints differently; they are not guarantees or permissions. Fulfillment still checks the caller's permissions.
+
+Deletion: It is asynchronous. A repeat request after the resource is gone can return `NotFound`.
 -->
 
 ---
@@ -107,11 +113,13 @@ Backup — if asked: Deletion is asynchronous. Repeating it after the resource i
 
 ## Recorded demo
 
-> <a href="https://drive.google.com/file/d/1boI9cFBGApCeNfvQYT4Tojr163KseNhC/view?usp=sharing" target="_blank" rel="noopener noreferrer">Watch the OSAC Deployment MCP PoC →</a>
+> <a href="https://drive.google.com/file/d/1boI9cFBGApCeNfvQYT4Tojr163KseNhC/view?usp=sharing" target="_blank" rel="noopener noreferrer">Watch the OSAC MCP Server PoC →</a>
 
 <!--
 Speaker notes — 2:25–5:55
-Spoken: Open the 3:20 recording, which opens in a new tab, then return to the deck. The recording shows explicit deletion as well as the VM request.
+Spoken: Here's the recording. Watch the model find options, ask before creating, and report the status OSAC actually returns.
+
+Presenter cue: Open the 3:20 recording in a new tab, then return to the deck. It also shows explicit deletion.
 
 Backup — if asked: The link is accessible to company employees. The slide avoids a fixed prompt checklist so narration follows the recording. If creation is accepted but the VM is not Ready, distinguish those states.
 -->
@@ -140,7 +148,7 @@ it does not create networks.
 
 <!--
 Speaker notes — 5:55–7:10
-Spoken: These are three distinct tracks. Broaden what a model can request: additional catalog-backed offerings, plus a separately designed network-creation workflow. Govern writes with real confirmation and audit behavior, not just tool hints or a conversational request for approval. Then make setup, login, failure reporting, and hosting reliable beyond this prepared demo environment. The current VM can already be tracked by ID; a new status mechanism is not the immediate next feature.
+Spoken: My recommendation is to turn this into a Feature. The demo uses networking and storage we set up ahead of time; the model can select them, but these tools don't create them. First, add more catalog-backed offerings and design network creation as a separate workflow. Second, decide how to audit and confirm actions that create or delete resources, including whether we need a dry run. Third, make setup and login work reliably beyond this prepared demo. We can already check a VM's status by ID, so I wouldn't start with another tracking API.
 
 Backup — if asked:
 
@@ -150,7 +158,7 @@ Network creation needs its own workflow, not a hidden side effect of VM creation
 
 The create order is: discover a platform-provided NetworkClass; create a VirtualNetwork with a CIDR and wait for READY; create a Subnet inside that CIDR and, if needed, a SecurityGroup on the same VirtualNetwork. Subnet and SecurityGroup are siblings, so neither has to be created before the other, but the selected Subnet and any selected SecurityGroup must be READY before a VM can use them. Then create the VM with those references. A future MCP flow must handle partial failure and distinguish newly created resources from shared ones. For cleanup, delete this VM first, then any owned SecurityGroup, Subnet, and VirtualNetwork in that order, checking for other references before each deletion; backend guards prevent deleting a Subnet while a SecurityGroup remains on its network or deleting a VirtualNetwork while children remain. Never remove shared networking merely because one VM was deleted.
 
-Mutation governance: Tool descriptions and risk annotations are hints to model hosts, not approval or authorization boundaries. The server does not enforce a separate human approval step. Define which mutations require confirmation and where it is enforced. A preview or dry-run should reuse Fulfillment validation to show resolved defaults, rejected inputs, and likely effects without persisting a resource. Test tenant isolation, and correlate MCP and Fulfillment audit records by caller, tenant, tool, catalog item, resource, and outcome without logging tokens or secrets.
+Mutation governance: Define which actions that create or delete resources need human confirmation and where to enforce it. A preview or dry-run should reuse Fulfillment validation to show resolved defaults, rejected inputs, and likely effects without persisting a resource. Test tenant isolation, and correlate MCP and Fulfillment audit records by caller, tenant, tool, catalog item, resource, and outcome without logging tokens or secrets.
 
 Delivery readiness: Create returns a resource ID and initial state, and the host polls `get_resource`; that is sufficient for this VM demo. Make terminal failure reasons and retry guidance clear without assuming every workflow needs a separate operation ID. For a fresh supported model host, verify CA trust, OAuth metadata discovery, the configured client and callback, login through Keycloak, an authorized tool call, and token refresh. Test bad callbacks, invalid scopes, and expired tokens. For the server, test certificate rotation, health checks, restarts, multiple replicas, and MCP SDK compatibility.
 -->
