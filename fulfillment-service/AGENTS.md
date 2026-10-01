@@ -77,6 +77,11 @@ deployed service. Catalog Item API behavior, CLI creation, and the ClusterOrder
 release image written by Fulfillment are checked in `it/`. Keep cross-component
 provisioning journeys under `tests/e2e/`.
 
+The MCP SDK spec in `it/` starts its HTTP handler in-process and calls the
+deployed public Fulfillment API with each user's token. It covers public API
+authorization and persistence, while chart renders cover opt-in deployment
+shape. It does not exercise a deployed MCP route or TLS handshake.
+
 To prepare a fresh environment, recreate the dedicated `osac-dev` Kind
 cluster. Collect useful diagnostics before deleting it.
 
